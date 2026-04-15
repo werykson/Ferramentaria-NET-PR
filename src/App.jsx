@@ -20,9 +20,16 @@ const MENU = [
 
 const emptyMinimos = () => Object.fromEntries(CCS.map((cc) => [cc, ""]));
 const STORAGE_KEY_ITEMS = "ferramentaria_net_pr_itens";
+const STORAGE_KEY_AUTH = "ferramentaria_net_pr_auth";
 
 export default function App() {
-  const [logado, setLogado] = useState(false);
+  const [logado, setLogado] = useState(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY_AUTH) === "true";
+    } catch {
+      return false;
+    }
+  });
   const [usuario, setUsuario] = useState("");
   const [senha, setSenha] = useState("");
   const [pagina, setPagina] = useState("dashboard");
@@ -50,6 +57,7 @@ export default function App() {
   const login = () => {
     if (usuario === "admin" && senha === "admin123") {
       setLogado(true);
+      localStorage.setItem(STORAGE_KEY_AUTH, "true");
     } else {
       alert("Login inválido");
     }
@@ -60,6 +68,7 @@ export default function App() {
     setUsuario("");
     setSenha("");
     setPagina("dashboard");
+    localStorage.removeItem(STORAGE_KEY_AUTH);
   };
 
   const atualizarMinimo = (cc, valor) => {

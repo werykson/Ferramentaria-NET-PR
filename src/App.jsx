@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const CCS = [
   "CC NET APOIO PR",
@@ -19,6 +19,7 @@ const MENU = [
 ];
 
 const emptyMinimos = () => Object.fromEntries(CCS.map((cc) => [cc, ""]));
+const STORAGE_KEY_ITEMS = "ferramentaria_net_pr_itens";
 
 export default function App() {
   const [logado, setLogado] = useState(false);
@@ -26,7 +27,14 @@ export default function App() {
   const [senha, setSenha] = useState("");
   const [pagina, setPagina] = useState("dashboard");
 
-  const [itens, setItens] = useState([]);
+  const [itens, setItens] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_ITEMS);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [itemForm, setItemForm] = useState({
     codigo: "",
     nome: "",
@@ -34,6 +42,10 @@ export default function App() {
     qtdKit: "",
     minimos: emptyMinimos(),
   });
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_ITEMS, JSON.stringify(itens));
+  }, [itens]);
 
   const login = () => {
     if (usuario === "admin" && senha === "admin123") {
@@ -180,7 +192,7 @@ export default function App() {
               <h3 style={styles.sectionTitle}>Visão geral</h3>
               <p style={styles.mutedText}>
                 Base do sistema pronta. Agora os itens já podem ter estoque
-                mínimo separado por centro de custo.
+                mínimo separado por centro de custo e ficam salvos no navegador.
               </p>
             </div>
           </>
@@ -246,9 +258,22 @@ export default function App() {
               </div>
             </div>
 
-            <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
-              Cadastrar item
-            </button>
+            <div style={styles.actionRow}>
+              <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
+                Cadastrar item
+              </button>
+              <button
+                style={styles.secondaryButtonInline}
+                onClick={() => {
+                  if (window.confirm("Deseja apagar todos os itens salvos no navegador?")) {
+                    setItens([]);
+                    localStorage.removeItem(STORAGE_KEY_ITEMS);
+                  }
+                }}
+              >
+                Limpar itens salvos
+              </button>
+            </div>
 
             <div style={styles.tableWrap}>
               <table style={styles.table}>
@@ -410,6 +435,21 @@ const styles = {
     color: "#ffffff",
     cursor: "pointer",
     fontSize: 14,
+  },
+  secondaryButtonInline: {
+    padding: "12px 18px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1",
+    background: "#ffffff",
+    color: "#0f172a",
+    cursor: "pointer",
+    fontSize: 14,
+  },
+  actionRow: {
+    display: "flex",
+    gap: 12,
+    flexWrap: "wrap",
+    alignItems: "center",
   },
   loginHint: {
     marginTop: 16,

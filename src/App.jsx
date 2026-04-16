@@ -138,109 +138,109 @@ export default function App() {
       type: "text/csv;charset=utf-8;",
     });
 
-const baixarModeloCSV = () => {
-  const headers = [
-    "codigo",
-    "nome",
-    "valor",
-    "qtdKit",
-    "CC NET APOIO PR",
-    "CC NET CTA PR",
-    "CC NET LDA PR",
-    "CC NET MGA PR",
-    "CC NET LITORAL PR",
-    "CC NET SUDOESTE PR",
-  ];
-
-  const exemplo = [
-    "001",
-    "Alicate Universal",
-    "45.90",
-    "1",
-    "2",
-    "3",
-    "2",
-    "4",
-    "1",
-    "2",
-  ];
-
-  const csvContent = [headers, exemplo]
-    .map((linha) => linha.join(";"))
-    .join("\n");
-
-  const blob = new Blob([csvContent], {
-    type: "text/csv;charset=utf-8;",
-  });
-
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "modelo_itens.csv";
-  link.click();
-};
-
-const importarCSV = (event) => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-
-  reader.onload = (e) => {
-    const texto = e.target?.result;
-    if (!texto) return;
-
-    const linhas = String(texto)
-      .split(/\r?\n/)
-      .filter((linha) => linha.trim() !== "");
-
-    if (linhas.length < 2) {
-      alert("Arquivo CSV vazio ou inválido.");
-      return;
-    }
-
-    const headers = linhas[0].split(";").map((h) => h.trim());
-
-    const novosItens = linhas.slice(1).map((linha) => {
-      const colunas = linha.split(";");
-
-      const registro = {};
-      headers.forEach((header, index) => {
-        registro[header] = (colunas[index] || "").trim();
-      });
-
-      return {
-        id: Date.now() + Math.random(),
-        codigo: registro["codigo"] || "",
-        nome: registro["nome"] || "",
-        valor: Number(registro["valor"] || 0),
-        qtdKit: Number(registro["qtdKit"] || 0),
-        minimos: {
-          "CC NET APOIO PR": Number(registro["CC NET APOIO PR"] || 0),
-          "CC NET CTA PR": Number(registro["CC NET CTA PR"] || 0),
-          "CC NET LDA PR": Number(registro["CC NET LDA PR"] || 0),
-          "CC NET MGA PR": Number(registro["CC NET MGA PR"] || 0),
-          "CC NET LITORAL PR": Number(registro["CC NET LITORAL PR"] || 0),
-          "CC NET SUDOESTE PR": Number(registro["CC NET SUDOESTE PR"] || 0),
-        },
-      };
-    });
-
-    const itensValidos = novosItens.filter(
-      (item) => item.codigo.trim() && item.nome.trim()
-    );
-
-    setItens((prev) => [...prev, ...itensValidos]);
-    alert(`${itensValidos.length} item(ns) importado(s) com sucesso.`);
-    event.target.value = "";
-  };
-
-  reader.readAsText(file, "utf-8");
-};
-    
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = "itens.csv";
     link.click();
+  };
+
+  const baixarModeloCSV = () => {
+    const headers = [
+      "codigo",
+      "nome",
+      "valor",
+      "qtdKit",
+      "CC NET APOIO PR",
+      "CC NET CTA PR",
+      "CC NET LDA PR",
+      "CC NET MGA PR",
+      "CC NET LITORAL PR",
+      "CC NET SUDOESTE PR",
+    ];
+
+    const exemplo = [
+      "001",
+      "Alicate Universal",
+      "45.90",
+      "1",
+      "2",
+      "3",
+      "2",
+      "4",
+      "1",
+      "2",
+    ];
+
+    const csvContent = [headers, exemplo]
+      .map((linha) => linha.join(";"))
+      .join("\n");
+
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "modelo_itens.csv";
+    link.click();
+  };
+
+  const importarCSV = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      const texto = e.target?.result;
+      if (!texto) return;
+
+      const linhas = String(texto)
+        .split(/\r?\n/)
+        .filter((linha) => linha.trim() !== "");
+
+      if (linhas.length < 2) {
+        alert("Arquivo CSV vazio ou inválido.");
+        return;
+      }
+
+      const headers = linhas[0].split(";").map((h) => h.trim());
+
+      const novosItens = linhas.slice(1).map((linha) => {
+        const colunas = linha.split(";");
+
+        const registro = {};
+        headers.forEach((header, index) => {
+          registro[header] = (colunas[index] || "").trim();
+        });
+
+        return {
+          id: Date.now() + Math.random(),
+          codigo: registro["codigo"] || "",
+          nome: registro["nome"] || "",
+          valor: Number(registro["valor"] || 0),
+          qtdKit: Number(registro["qtdKit"] || 0),
+          minimos: {
+            "CC NET APOIO PR": Number(registro["CC NET APOIO PR"] || 0),
+            "CC NET CTA PR": Number(registro["CC NET CTA PR"] || 0),
+            "CC NET LDA PR": Number(registro["CC NET LDA PR"] || 0),
+            "CC NET MGA PR": Number(registro["CC NET MGA PR"] || 0),
+            "CC NET LITORAL PR": Number(registro["CC NET LITORAL PR"] || 0),
+            "CC NET SUDOESTE PR": Number(registro["CC NET SUDOESTE PR"] || 0),
+          },
+        };
+      });
+
+      const itensValidos = novosItens.filter(
+        (item) => item.codigo.trim() && item.nome.trim()
+      );
+
+      setItens((prev) => [...prev, ...itensValidos]);
+      alert(`${itensValidos.length} item(ns) importado(s) com sucesso.`);
+      event.target.value = "";
+    };
+
+    reader.readAsText(file, "utf-8");
   };
 
   const totalItens = itens.length;
@@ -398,42 +398,49 @@ const importarCSV = (event) => {
               </div>
             </div>
 
-        <div style={styles.actionRow}>
-  <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
-    Cadastrar item
-  </button>
+            <div style={styles.actionRow}>
+              <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
+                Cadastrar item
+              </button>
 
-  <button style={styles.primaryButtonInline} onClick={exportarCSV}>
-    Exportar CSV
-  </button>
+              <button style={styles.primaryButtonInline} onClick={exportarCSV}>
+                Exportar CSV
+              </button>
 
-  <button style={styles.primaryButtonInline} onClick={baixarModeloCSV}>
-    Baixar modelo CSV
-  </button>
+              <button
+                style={styles.primaryButtonInline}
+                onClick={baixarModeloCSV}
+              >
+                Baixar modelo CSV
+              </button>
 
-  <label style={styles.primaryButtonInline}>
-    Importar CSV
-    <input
-      type="file"
-      accept=".csv"
-      onChange={importarCSV}
-      style={{ display: "none" }}
-    />
-  </label>
+              <label style={styles.primaryButtonInline}>
+                Importar CSV
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={importarCSV}
+                  style={{ display: "none" }}
+                />
+              </label>
 
-  <button
-    style={styles.secondaryButtonInline}
-    onClick={() => {
-      if (window.confirm("Deseja apagar todos os itens salvos no navegador?")) {
-        setItens([]);
-        localStorage.removeItem(STORAGE_KEY_ITEMS);
-      }
-    }}
-  >
-    Limpar itens salvos
-  </button>
-</div>
-            
+              <button
+                style={styles.secondaryButtonInline}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      "Deseja apagar todos os itens salvos no navegador?"
+                    )
+                  ) {
+                    setItens([]);
+                    localStorage.removeItem(STORAGE_KEY_ITEMS);
+                  }
+                }}
+              >
+                Limpar itens salvos
+              </button>
+            </div>
+
             <div style={styles.tableWrap}>
               <table style={styles.table}>
                 <thead>
@@ -594,6 +601,10 @@ const styles = {
     color: "#ffffff",
     cursor: "pointer",
     fontSize: 14,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    textDecoration: "none",
   },
   secondaryButtonInline: {
     padding: "12px 18px",

@@ -138,6 +138,14 @@ export default function App() {
       type: "text/csv;charset=utf-8;",
     });
 
+const baixarModeloCSV = () => {
+  ...
+};
+
+const importarCSV = (event) => {
+  ...
+};
+    
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = "itens.csv";
@@ -299,32 +307,42 @@ export default function App() {
               </div>
             </div>
 
-            <div style={styles.actionRow}>
-              <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
-                Cadastrar item
-              </button>
+           <div style={styles.actionRow}>
+  <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
+    Cadastrar item
+  </button>
 
-              <button style={styles.primaryButtonInline} onClick={exportarCSV}>
-                Exportar CSV
-              </button>
+  <button style={styles.primaryButtonInline} onClick={exportarCSV}>
+    Exportar CSV
+  </button>
 
-              <button
-                style={styles.secondaryButtonInline}
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      "Deseja apagar todos os itens salvos no navegador?"
-                    )
-                  ) {
-                    setItens([]);
-                    localStorage.removeItem(STORAGE_KEY_ITEMS);
-                  }
-                }}
-              >
-                Limpar itens salvos
-              </button>
-            </div>
+  <button style={styles.primaryButtonInline} onClick={baixarModeloCSV}>
+    Baixar modelo CSV
+  </button>
 
+  <label style={styles.primaryButtonInline}>
+    Importar CSV
+    <input
+      type="file"
+      accept=".csv"
+      onChange={importarCSV}
+      style={{ display: "none" }}
+    />
+  </label>
+
+  <button
+    style={styles.secondaryButtonInline}
+    onClick={() => {
+      if (window.confirm("Deseja apagar todos os itens salvos no navegador?")) {
+        setItens([]);
+        localStorage.removeItem(STORAGE_KEY_ITEMS);
+      }
+    }}
+  >
+    Limpar itens salvos
+  </button>
+</div>
+            
             <div style={styles.tableWrap}>
               <table style={styles.table}>
                 <thead>

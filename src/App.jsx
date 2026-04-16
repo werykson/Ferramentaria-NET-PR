@@ -30,6 +30,7 @@ export default function App() {
       return false;
     }
   });
+
   const [usuario, setUsuario] = useState("");
   const [senha, setSenha] = useState("");
   const [pagina, setPagina] = useState("dashboard");
@@ -42,6 +43,7 @@ export default function App() {
       return [];
     }
   });
+
   const [itemForm, setItemForm] = useState({
     codigo: "",
     nome: "",
@@ -49,41 +51,6 @@ export default function App() {
     qtdKit: "",
     minimos: emptyMinimos(),
   });
-
-  const exportarCSV = () => {
-  if (itens.length === 0) {
-    alert("Nenhum item para exportar");
-    return;
-  }
-
-  const headers = [
-    "codigo",
-    "nome",
-    "valor",
-    "qtdKit",
-    "minimos"
-  ];
-
-  const rows = itens.map(item => [
-    item.codigo,
-    item.nome,
-    item.valor,
-    item.qtdKit,
-    JSON.stringify(item.minimos || {})
-  ]);
-
-  const csvContent =
-    [headers, ...rows]
-      .map(e => e.join(";"))
-      .join("\n");
-
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "itens.csv";
-  link.click();
-};
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_ITEMS, JSON.stringify(itens));
@@ -145,6 +112,36 @@ export default function App() {
 
   const excluirItem = (id) => {
     setItens((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const exportarCSV = () => {
+    if (itens.length === 0) {
+      alert("Nenhum item para exportar");
+      return;
+    }
+
+    const headers = ["codigo", "nome", "valor", "qtdKit", "minimos"];
+
+    const rows = itens.map((item) => [
+      item.codigo,
+      item.nome,
+      item.valor,
+      item.qtdKit,
+      JSON.stringify(item.minimos || {}),
+    ]);
+
+    const csvContent = [headers, ...rows]
+      .map((linha) => linha.join(";"))
+      .join("\n");
+
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "itens.csv";
+    link.click();
   };
 
   const totalItens = itens.length;
@@ -302,20 +299,23 @@ export default function App() {
               </div>
             </div>
 
-           <div style={styles.actionRow}>
-  <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
-    Cadastrar item
-  </button>
+            <div style={styles.actionRow}>
+              <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
+                Cadastrar item
+              </button>
 
-  <button style={styles.primaryButtonInline} onClick={exportarCSV}>
-    Exportar CSV
-  </button>
+              <button style={styles.primaryButtonInline} onClick={exportarCSV}>
+                Exportar CSV
+              </button>
 
-  <button
-    style={styles.secondaryButtonInline}
-    
+              <button
+                style={styles.secondaryButtonInline}
                 onClick={() => {
-                  if (window.confirm("Deseja apagar todos os itens salvos no navegador?")) {
+                  if (
+                    window.confirm(
+                      "Deseja apagar todos os itens salvos no navegador?"
+                    )
+                  ) {
                     setItens([]);
                     localStorage.removeItem(STORAGE_KEY_ITEMS);
                   }

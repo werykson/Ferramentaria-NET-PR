@@ -372,6 +372,7 @@ export default function App() {
   const [confirmarSenhaObrigatoria, setConfirmarSenhaObrigatoria] = useState("");
   const [pagina, setPagina] = useState("dashboard");
   const [dashboardAbaAtiva, setDashboardAbaAtiva] = useState("criticos");
+  const [dashboardModo, setDashboardModo] = useState("resumo");
   const [carregando, setCarregando] = useState(true);
   const [carregandoMovimentacoes, setCarregandoMovimentacoes] = useState(true);
 
@@ -414,6 +415,10 @@ export default function App() {
       setPagina("dashboard");
     }
   }, [pagina, usuarioAtual]);
+
+  useEffect(() => {
+    if (pagina !== "dashboard") setDashboardModo("resumo");
+  }, [pagina]);
 
   const carregarUsuariosSistema = async () => {
     setCarregandoUsuarios(true);
@@ -791,11 +796,9 @@ export default function App() {
     const rankingSubstituicoesTecnicos = Object.values(substituicoesPorTecnico).sort(
       (a, b) => b.total - a.total
     );
-    const itemMaisSubstituido = rankingSubstituicoes[0] || null;
 
     return {
       itensCriticos,
-      itemMaisSubstituido,
       top10ItensSubstituidos: rankingSubstituicoes.slice(0, 10),
       top10TecnicosSubstituidores: rankingSubstituicoesTecnicos.slice(0, 10),
       totalItens: itens.length,
@@ -805,6 +808,17 @@ export default function App() {
           const qtdKit = Number(itensById[Number(registro.itemId)]?.qtdKit || 0);
           if (qtdKit <= 0) return acc;
           return acc + Math.floor(Number(registro.estoque || 0) / qtdKit);
+        }, 0),
+      valorTotalKitsDisponiveis: estoqueGeral
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .reduce((acc, registro) => {
+          const itemRef = itensById[Number(registro.itemId)];
+          const qtdKit = Number(itemRef?.qtdKit || itemRef?.qtd_kit || 0);
+          if (qtdKit <= 0) return acc;
+          const est = Number(registro.estoque || 0);
+          const kitsCompletos = Math.floor(est / qtdKit);
+          const valorUnit = Number(itemRef?.valor || 0);
+          return acc + kitsCompletos * qtdKit * valorUnit;
         }, 0),
       totalTecnicos: tecnicos.filter((tec) => roleCanViewCC(usuarioAtual, tec.cc)).length,
       totalNoEstoque: estoqueGeral
@@ -1884,12 +1898,67 @@ export default function App() {
 
         {!carregando && pagina === "dashboard" && (
           <>
+            {dashboardModo === "criticos-detalhe" ? (
+              <div style={styles.section}>
+                <div style={styles.sectionHeaderLine}>
+                  <h3 style={styles.sectionTitle}>Itens críticos abaixo do mínimo</h3>
+                  <button type="button" style={styles.secondaryButtonInline} onClick={() => setDashboardModo("resumo")}>
+                    Voltar ao dashboard
+                  </button>
+                </div>
+                <p style={styles.mutedText}>
+                  Itens com estoque abaixo do mínimo cadastrado, por centro de custo e item.
+                </p>
+                <div style={styles.tableWrap}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>CC</th>
+                        <th style={styles.th}>Item</th>
+                        <th style={styles.th}>Saldo</th>
+                        <th style={styles.th}>Mínimo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {itensCriticosVisiveis.length === 0 ? (
+                        <tr><td style={styles.td} colSpan={4}>Nenhum item crítico no momento.</td></tr>
+                      ) : (
+                        itensCriticosVisiveis.map((registro, index) => (
+                          <tr key={`${registro.cc}-${registro.itemId}-${index}`}>
+                            <td style={styles.td}>{registro.cc}</td>
+                            <td style={styles.td}>{registro.itemNome}</td>
+                            <td style={{ ...styles.td, color: "#dc2626", fontWeight: 700 }}>{registro.estoque}</td>
+                            <td style={styles.td}>{registro.minimo}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <>
             <div style={styles.cardsGrid}>
-              <MetricCard titulo="Kits disponíveis para entrega" valor={indicadoresDashboard.totalKitsDisponiveis} iconKey="kits" />
               <MetricCard titulo="Técnicos cadastrados" valor={indicadoresDashboard.totalTecnicos} iconKey="tecnicos" />
               <MetricCard titulo="Itens no estoque" valor={indicadoresDashboard.totalNoEstoque} iconKey="estoque" />
               <MetricCard titulo="Itens com técnicos" valor={indicadoresDashboard.totalComTecnicos} iconKey="campo" />
-              <MetricCard titulo="Itens críticos abaixo do mínimo" valor={itensCriticosVisiveis.length} destaque iconKey="critico" />
+              <MetricCard
+                titulo="Itens críticos abaixo do mínimo (clique para ver lista)"
+                valor={itensCriticosVisiveis.length}
+                destaque
+                iconKey="critico"
+                onClick={() => setDashboardModo("criticos-detalhe")}
+              />
+              <MetricCard titulo="Kits disponíveis para entrega" valor={indicadoresDashboard.totalKitsDisponiveis} iconKey="kits" />
+              <MetricCard
+                titulo="Valor dos kits disponíveis (estoque)"
+                valor={
+                  canViewDashboardValues(usuarioAtual)
+                    ? formatMoney(indicadoresDashboard.valorTotalKitsDisponiveis)
+                    : "Sem permissão"
+                }
+                iconKey="kits"
+              />
               <MetricCard
                 titulo="Valor total com técnicos"
                 valor={canViewDashboardValues(usuarioAtual) ? formatMoney(indicadoresDashboard.valorTotalComTecnicos) : "Sem permissão"}
@@ -1898,11 +1967,14 @@ export default function App() {
                 titulo="Valor total no estoque"
                 valor={canViewDashboardValues(usuarioAtual) ? formatMoney(indicadoresDashboard.valorTotalNoEstoque) : "Sem permissão"}
               />
-              <MetricCard
-                titulo="Item mais substituído"
-                valor={indicadoresDashboard.itemMaisSubstituido ? `${indicadoresDashboard.itemMaisSubstituido.itemNome} (${indicadoresDashboard.itemMaisSubstituido.total})` : "Sem dados"}
-              />
             </div>
+            {canViewDashboardValues(usuarioAtual) && (
+              <p style={{ ...styles.mutedText, marginTop: 10 }}>
+                Valor dos kits: soma do valor das unidades que formam apenas os{" "}
+                <strong>kits completos</strong> no estoque (para cada item com Qtd/kit &gt; 0: kits × Qtd/kit × valor
+                unitário).
+              </p>
+            )}
             {!canViewDashboardValues(usuarioAtual) && (
               <p style={{ ...styles.mutedText, marginTop: 10 }}>
                 Seu usuário não possui permissão para visualizar valores financeiros no dashboard.
@@ -1958,7 +2030,7 @@ export default function App() {
                           <tr><td style={styles.td} colSpan={4}>Nenhum item crítico no momento.</td></tr>
                         ) : (
                           itensCriticosVisiveis.map((registro, index) => (
-                            <tr key={`${registro.cc}-${registro.item_id}-${index}`}>
+                            <tr key={`${registro.cc}-${registro.itemId}-${index}`}>
                               <td style={styles.td}>{registro.cc}</td>
                               <td style={styles.td}>{registro.itemNome}</td>
                               <td style={{ ...styles.td, color: "#dc2626", fontWeight: 700 }}>{registro.estoque}</td>
@@ -2046,6 +2118,8 @@ export default function App() {
                 </>
               )}
             </div>
+              </>
+            )}
           </>
         )}
 
@@ -2837,16 +2911,40 @@ function DashboardIcon({ iconKey }) {
   return null;
 }
 
-function MetricCard({ titulo, valor, destaque = false, iconKey = null }) {
-  return (
-    <div style={{ ...styles.card, ...(destaque ? styles.cardHighlight : {}) }}>
+function MetricCard({ titulo, valor, destaque = false, iconKey = null, onClick = null }) {
+  const cardStyle = {
+    ...styles.card,
+    ...(destaque ? styles.cardHighlight : {}),
+    ...(onClick ? styles.cardClickable : {}),
+  };
+  const inner = (
+    <>
       <div style={styles.cardTitleRow}>
         <div style={styles.cardTitle}>{titulo}</div>
         {iconKey ? <span style={styles.cardIcon}><DashboardIcon iconKey={iconKey} /></span> : null}
       </div>
       <div style={styles.cardValueSmall}>{valor}</div>
-    </div>
+    </>
   );
+  if (onClick) {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        style={cardStyle}
+        onClick={onClick}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onClick();
+          }
+        }}
+      >
+        {inner}
+      </div>
+    );
+  }
+  return <div style={cardStyle}>{inner}</div>;
 }
 
 function SummaryBox({ titulo, valor }) {
@@ -3069,6 +3167,7 @@ const styles = {
   logoutButton: { padding: "10px 16px", borderRadius: 10, border: 0, background: "#0f172a", color: "#ffffff", cursor: "pointer" },
   cardsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 },
   card: { background: "#ffffff", borderRadius: 18, padding: 20, boxShadow: "0 16px 36px rgba(15,23,42,0.08)", minHeight: 120, border: "1px solid #e2e8f0", transition: "transform 0.2s ease" },
+  cardClickable: { cursor: "pointer", outline: "none" },
   cardHighlight: { border: "2px solid #fecaca" },
   cardTitleRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
   cardTitle: { color: "#334155", fontSize: 15 },

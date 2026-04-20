@@ -371,6 +371,7 @@ export default function App() {
   const [novaSenhaObrigatoria, setNovaSenhaObrigatoria] = useState("");
   const [confirmarSenhaObrigatoria, setConfirmarSenhaObrigatoria] = useState("");
   const [pagina, setPagina] = useState("dashboard");
+  const [dashboardAbaAtiva, setDashboardAbaAtiva] = useState("criticos");
   const [carregando, setCarregando] = useState(true);
   const [carregandoMovimentacoes, setCarregandoMovimentacoes] = useState(true);
 
@@ -737,6 +738,7 @@ export default function App() {
     );
 
     const substituicoes = {};
+    const substituicoesPorTecnico = {};
     movimentacoes.forEach((mov) => {
       if (!["substituicao_perda", "substituicao_quebra", "substituicao_desgaste"].includes(mov.tipo)) return;
       const item = itensById[Number(mov.item_id)];
@@ -758,15 +760,40 @@ export default function App() {
       if (mov.tipo === "substituicao_perda") substituicoes[chave].perda += qtd;
       if (mov.tipo === "substituicao_quebra") substituicoes[chave].quebra += qtd;
       if (mov.tipo === "substituicao_desgaste") substituicoes[chave].desgaste += qtd;
+
+      if (mov.tecnico_id) {
+        const tecnicoId = Number(mov.tecnico_id);
+        const tecnico = tecnicosById[tecnicoId];
+        const chaveTecnico = String(tecnicoId);
+        if (!substituicoesPorTecnico[chaveTecnico]) {
+          substituicoesPorTecnico[chaveTecnico] = {
+            tecnico_id: tecnicoId,
+            tecnicoNome: tecnico?.nome || `Técnico #${tecnicoId}`,
+            cc: tecnico?.cc || cc || "-",
+            total: 0,
+            perda: 0,
+            quebra: 0,
+            desgaste: 0,
+          };
+        }
+        substituicoesPorTecnico[chaveTecnico].total += qtd;
+        if (mov.tipo === "substituicao_perda") substituicoesPorTecnico[chaveTecnico].perda += qtd;
+        if (mov.tipo === "substituicao_quebra") substituicoesPorTecnico[chaveTecnico].quebra += qtd;
+        if (mov.tipo === "substituicao_desgaste") substituicoesPorTecnico[chaveTecnico].desgaste += qtd;
+      }
     });
 
     const rankingSubstituicoes = Object.values(substituicoes).sort((a, b) => b.total - a.total);
+    const rankingSubstituicoesTecnicos = Object.values(substituicoesPorTecnico).sort(
+      (a, b) => b.total - a.total
+    );
     const itemMaisSubstituido = rankingSubstituicoes[0] || null;
 
     return {
       itensCriticos,
       itemMaisSubstituido,
       top10ItensSubstituidos: rankingSubstituicoes.slice(0, 10),
+      top10TecnicosSubstituidores: rankingSubstituicoesTecnicos.slice(0, 10),
       totalItens: itens.length,
       totalKitsDisponiveis: estoqueGeral
         .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
@@ -1824,66 +1851,140 @@ export default function App() {
             )}
 
             <div style={styles.section}>
-              <h3 style={styles.sectionTitle}>Itens críticos abaixo do mínimo</h3>
-              <div style={styles.tableWrap}>
-                <table style={styles.table}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>CC</th>
-                      <th style={styles.th}>Item</th>
-                      <th style={styles.th}>Saldo</th>
-                      <th style={styles.th}>Mínimo</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {itensCriticosVisiveis.length === 0 ? (
-                      <tr><td style={styles.td} colSpan={4}>Nenhum item crítico no momento.</td></tr>
-                    ) : (
-                      itensCriticosVisiveis.map((registro, index) => (
-                        <tr key={`${registro.cc}-${registro.item_id}-${index}`}>
-                          <td style={styles.td}>{registro.cc}</td>
-                          <td style={styles.td}>{registro.itemNome}</td>
-                          <td style={{ ...styles.td, color: "#dc2626", fontWeight: 700 }}>{registro.estoque}</td>
-                          <td style={styles.td}>{registro.minimo}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+              <div style={styles.dashboardTabsRow}>
+                <button
+                  style={{
+                    ...styles.dashboardTabButton,
+                    ...(dashboardAbaAtiva === "criticos" ? styles.dashboardTabButtonActive : {}),
+                  }}
+                  onClick={() => setDashboardAbaAtiva("criticos")}
+                >
+                  Itens críticos abaixo do mínimo
+                </button>
+                <button
+                  style={{
+                    ...styles.dashboardTabButton,
+                    ...(dashboardAbaAtiva === "itens" ? styles.dashboardTabButtonActive : {}),
+                  }}
+                  onClick={() => setDashboardAbaAtiva("itens")}
+                >
+                  Top 10 itens substituídos
+                </button>
+                <button
+                  style={{
+                    ...styles.dashboardTabButton,
+                    ...(dashboardAbaAtiva === "tecnicos" ? styles.dashboardTabButtonActive : {}),
+                  }}
+                  onClick={() => setDashboardAbaAtiva("tecnicos")}
+                >
+                  Top 10 técnicos substituidores
+                </button>
               </div>
-            </div>
 
-            <div style={styles.section}>
-              <h3 style={styles.sectionTitle}>Top 10 itens mais substituídos (perda, quebra e desgaste)</h3>
-              {indicadoresDashboard.top10ItensSubstituidos.length === 0 ? (
-                <p style={styles.mutedText}>Ainda não existem substituições lançadas.</p>
-              ) : (
-                <div style={styles.tableWrap}>
-                  <table style={styles.table}>
-                    <thead>
-                      <tr>
-                        <th style={styles.th}>Posição</th>
-                        <th style={styles.th}>Item</th>
-                        <th style={styles.th}>Total</th>
-                        <th style={styles.th}>Perda</th>
-                        <th style={styles.th}>Quebra</th>
-                        <th style={styles.th}>Desgaste</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {indicadoresDashboard.top10ItensSubstituidos.map((registro, index) => (
-                        <tr key={`${registro.item_id}-${index}`}>
-                          <td style={styles.td}>{index + 1}</td>
-                          <td style={styles.td}>{registro.itemNome}</td>
-                          <td style={styles.td}>{registro.total}</td>
-                          <td style={styles.td}>{registro.perda}</td>
-                          <td style={styles.td}>{registro.quebra}</td>
-                          <td style={styles.td}>{registro.desgaste}</td>
+              {dashboardAbaAtiva === "criticos" && (
+                <>
+                  <h3 style={styles.sectionTitle}>Itens críticos abaixo do mínimo</h3>
+                  <div style={styles.tableWrap}>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>CC</th>
+                          <th style={styles.th}>Item</th>
+                          <th style={styles.th}>Saldo</th>
+                          <th style={styles.th}>Mínimo</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {itensCriticosVisiveis.length === 0 ? (
+                          <tr><td style={styles.td} colSpan={4}>Nenhum item crítico no momento.</td></tr>
+                        ) : (
+                          itensCriticosVisiveis.map((registro, index) => (
+                            <tr key={`${registro.cc}-${registro.item_id}-${index}`}>
+                              <td style={styles.td}>{registro.cc}</td>
+                              <td style={styles.td}>{registro.itemNome}</td>
+                              <td style={{ ...styles.td, color: "#dc2626", fontWeight: 700 }}>{registro.estoque}</td>
+                              <td style={styles.td}>{registro.minimo}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+
+              {dashboardAbaAtiva === "itens" && (
+                <>
+                  <h3 style={styles.sectionTitle}>Top 10 itens mais substituídos (perda, quebra e desgaste)</h3>
+                  {indicadoresDashboard.top10ItensSubstituidos.length === 0 ? (
+                    <p style={styles.mutedText}>Ainda não existem substituições lançadas.</p>
+                  ) : (
+                    <div style={styles.tableWrap}>
+                      <table style={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={styles.th}>Posição</th>
+                            <th style={styles.th}>Item</th>
+                            <th style={styles.th}>Total</th>
+                            <th style={styles.th}>Perda</th>
+                            <th style={styles.th}>Quebra</th>
+                            <th style={styles.th}>Desgaste</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {indicadoresDashboard.top10ItensSubstituidos.map((registro, index) => (
+                            <tr key={`${registro.item_id}-${index}`}>
+                              <td style={styles.td}>{index + 1}</td>
+                              <td style={styles.td}>{registro.itemNome}</td>
+                              <td style={styles.td}>{registro.total}</td>
+                              <td style={styles.td}>{registro.perda}</td>
+                              <td style={styles.td}>{registro.quebra}</td>
+                              <td style={styles.td}>{registro.desgaste}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {dashboardAbaAtiva === "tecnicos" && (
+                <>
+                  <h3 style={styles.sectionTitle}>Top 10 técnicos com mais substituições (perda, quebra e desgaste)</h3>
+                  {indicadoresDashboard.top10TecnicosSubstituidores.length === 0 ? (
+                    <p style={styles.mutedText}>Ainda não existem substituições vinculadas a técnicos.</p>
+                  ) : (
+                    <div style={styles.tableWrap}>
+                      <table style={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={styles.th}>Posição</th>
+                            <th style={styles.th}>Técnico</th>
+                            <th style={styles.th}>CC</th>
+                            <th style={styles.th}>Total</th>
+                            <th style={styles.th}>Perda</th>
+                            <th style={styles.th}>Quebra</th>
+                            <th style={styles.th}>Desgaste</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {indicadoresDashboard.top10TecnicosSubstituidores.map((registro, index) => (
+                            <tr key={`${registro.tecnico_id}-${index}`}>
+                              <td style={styles.td}>{index + 1}</td>
+                              <td style={styles.td}>{registro.tecnicoNome}</td>
+                              <td style={styles.td}>{registro.cc}</td>
+                              <td style={styles.td}>{registro.total}</td>
+                              <td style={styles.td}>{registro.perda}</td>
+                              <td style={styles.td}>{registro.quebra}</td>
+                              <td style={styles.td}>{registro.desgaste}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </>
@@ -2839,6 +2940,21 @@ const styles = {
   sectionMiniTitle: { marginTop: 0, marginBottom: 16, color: "#0f172a" },
   sectionTitle: { marginTop: 0, color: "#0f172a" },
   sectionHeaderLine: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  dashboardTabsRow: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 },
+  dashboardTabButton: {
+    border: "1px solid #cbd5e1",
+    borderRadius: 10,
+    background: "#f8fafc",
+    color: "#0f172a",
+    fontWeight: 600,
+    padding: "8px 12px",
+    cursor: "pointer",
+  },
+  dashboardTabButtonActive: {
+    border: "1px solid #2563eb",
+    background: "#dbeafe",
+    color: "#1d4ed8",
+  },
   mutedText: { color: "#64748b", marginBottom: 0 },
   warningText: { color: "#9a3412", background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 10, padding: "8px 10px", marginBottom: 12, fontSize: 13 },
   formGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12 },

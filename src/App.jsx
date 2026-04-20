@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
+import { supabase } from "./supabaseClient";
 
 const CCS = [
   "CC NET APOIO PR",
@@ -9,308 +11,1692 @@ const CCS = [
   "CC NET SUDOESTE PR",
 ];
 
-const MENU = [
-  { key: "dashboard", label: "Dashboard" },
-  { key: "itens", label: "Itens" },
-  { key: "tecnicos", label: "Técnicos" },
-  { key: "movimentacoes", label: "Movimentações" },
-  { key: "estoque", label: "Estoque" },
-  { key: "usuarios", label: "Usuários" },
+const CARGOS = [
+  "Admin",
+  "Gerente",
+  "Coordenador",
+  "SUP. Almoxarifado",
+  "Sup. Técnico",
+  "Ass.Logistica",
 ];
 
-const STORAGE_KEY_ITEMS = "ferramentaria_net_pr_itens";
-const STORAGE_KEY_AUTH = "ferramentaria_net_pr_auth";
+const MENU = [
+  { key: "dashboard", label: "Dashboard", iconKey: "dashboard" },
+  { key: "itens", label: "Itens", iconKey: "itens" },
+  { key: "tecnicos", label: "Técnicos", iconKey: "tecnicos" },
+  { key: "movimentacoes", label: "Movimentações", iconKey: "movimentacoes" },
+  { key: "estoque", label: "Estoque", iconKey: "estoque" },
+  { key: "usuarios", label: "Usuários", iconKey: "usuarios" },
+];
 
-const emptyMinimos = () => Object.fromEntries(CCS.map((cc) => [cc, ""]));
+const STORAGE_KEY_AUTH = "ferramentaria_net_pr_auth_v3";
+const STORAGE_KEY_TRI = "ferramentaria_net_pr_tri_v3";
+const BRAND_LOGO_SRC = "/logo-eqs.png";
+const DEFAULT_USER_PASSWORD = "EQS@123";
 
-const normalizarMinimos = (minimos) => {
-  const base = Object.fromEntries(CCS.map((cc) => [cc, 0]));
+const TIPOS_MOV = [
+  { value: "entrada", label: "Entrada em estoque" },
+  { value: "saida_tecnico", label: "Saída para técnico" },
+  { value: "devolucao_tecnico", label: "Devolução de técnico" },
+  { value: "substituicao_perda", label: "Substituição por perda" },
+  { value: "substituicao_quebra", label: "Substituição por quebra" },
+  { value: "substituicao_desgaste", label: "Substituição por desgaste" },
+  { value: "ajuste_positivo", label: "Ajuste positivo" },
+  { value: "ajuste_negativo", label: "Ajuste negativo" },
+];
 
-  if (!minimos || typeof minimos !== "object") {
-    return base;
-  }
-
-  CCS.forEach((cc) => {
-    base[cc] = Number(minimos[cc] || 0);
-  });
-
-  return base;
+const LABEL_TIPO = {
+  entrada: "Entrada em estoque",
+  saida_tecnico: "Saída para técnico",
+  devolucao_tecnico: "Devolução de técnico",
+  substituicao_perda: "Substituição por perda",
+  substituicao_quebra: "Substituição por quebra",
+  substituicao_desgaste: "Substituição por desgaste",
+  ajuste_positivo: "Ajuste positivo",
+  ajuste_negativo: "Ajuste negativo",
+  triangulacao_saida: "Triangulação saída",
+  triangulacao_entrada: "Triangulação entrada",
 };
 
-const normalizarItem = (item) => ({
-  id: item?.id ?? Date.now() + Math.random(),
-  codigo: String(item?.codigo ?? "").trim(),
-  nome: String(item?.nome ?? "").trim(),
-  valor: Number(item?.valor || 0),
-  qtdKit: Number(item?.qtdKit || 0),
-  minimos: normalizarMinimos(item?.minimos),
+function normalizeHeaderKey(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toUpperCase();
+}
+
+function ccToHeaderToken(cc) {
+  return String(cc || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]/g, "_")
+    .toUpperCase();
+}
+
+const ITEM_HEADER_CODIGO = "CODIGO";
+const ITEM_HEADER_NOME = "NOME";
+const ITEM_HEADER_VALOR = "VALOR";
+const ITEM_HEADER_QTD_KIT = "QTD_KIT";
+const ITEM_MINIMO_HEADERS = CCS.map((cc) => ({
+  cc,
+  header: `MINIMO_${ccToHeaderToken(cc)}`,
+}));
+
+const TECNICO_HEADER_NOME = "NOME";
+const TECNICO_HEADER_CC = "CC";
+
+const emptyMinimos = () => Object.fromEntries(CCS.map((cc) => [cc, ""]));
+const emptyItemForm = () => ({
+  codigo: "",
+  nome: "",
+  valor: "",
+  qtdKit: "",
+  minimos: emptyMinimos(),
+});
+const emptyTecnicoForm = () => ({ nome: "", cc: "" });
+const emptyMovForm = () => ({
+  tipo: "entrada",
+  tecnico_id: "",
+  item_id: "",
+  cc: "",
+  quantidade: "",
+  observacao: "",
+});
+const emptyTriForm = () => ({
+  cc_origem: "",
+  cc_destino: "",
+  item_id: "",
+  quantidade: "",
+  observacao: "",
 });
 
+const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+function safeLocalStorageGet(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeLocalStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // noop
+  }
+}
+
+
+function getDefaultPermissions(cargo) {
+  const triangulacaoBase = ["Admin", "Gerente", "Coordenador"].includes(cargo);
+  return {
+    triangulacaoAcesso: triangulacaoBase,
+    triangulacaoSolicitar: triangulacaoBase,
+    triangulacaoAprovar: triangulacaoBase,
+    visualizarValores: ["Admin", "Gerente", "Coordenador", "SUP. Almoxarifado"].includes(cargo),
+    cadastroItens: ["Admin", "Gerente", "SUP. Almoxarifado"].includes(cargo),
+    cadastroTecnicos: ["Admin", "Gerente", "SUP. Almoxarifado", "Coordenador", "Ass.Logistica"].includes(cargo),
+  };
+}
+
+function normalizeUser(user) {
+  const cargo = user?.cargo || "Ass.Logistica";
+  const ccs = ["Admin", "Gerente", "SUP. Almoxarifado"].includes(cargo)
+    ? [...CCS]
+    : parseCCsValue(user?.ccs);
+  return {
+    ...user,
+    ativo: user?.ativo !== false,
+    mustChangePassword: user?.mustChangePassword === true,
+    ccs,
+    permissions: {
+      ...getDefaultPermissions(cargo),
+      ...(user?.permissions || {}),
+      triangulacaoAcesso:
+        typeof user?.permissions?.triangulacaoAcesso === "boolean"
+          ? user.permissions.triangulacaoAcesso
+          : typeof user?.permissions?.triangulacao === "boolean"
+            ? user.permissions.triangulacao
+            : getDefaultPermissions(cargo).triangulacaoAcesso,
+      triangulacaoSolicitar:
+        typeof user?.permissions?.triangulacaoSolicitar === "boolean"
+          ? user.permissions.triangulacaoSolicitar
+          : typeof user?.permissions?.triangulacao === "boolean"
+            ? user.permissions.triangulacao
+            : getDefaultPermissions(cargo).triangulacaoSolicitar,
+      triangulacaoAprovar:
+        typeof user?.permissions?.triangulacaoAprovar === "boolean"
+          ? user.permissions.triangulacaoAprovar
+          : typeof user?.permissions?.triangulacao === "boolean"
+            ? user.permissions.triangulacao
+            : getDefaultPermissions(cargo).triangulacaoAprovar,
+    },
+  };
+}
+
+function userHasPermission(usuario, key) {
+  if (!usuario) return false;
+  if (typeof usuario?.permissions?.[key] === "boolean") {
+    return usuario.permissions[key];
+  }
+  return getDefaultPermissions(usuario?.cargo)[key] === true;
+}
+
+function toDbUserPayload(user) {
+  const normalizado = normalizeUser(user);
+  return {
+    id: String(normalizado.id),
+    nome: normalizado.nome,
+    usuario: normalizado.usuario,
+    senha: normalizado.senha,
+    cargo: normalizado.cargo,
+    ccs: normalizado.ccs || [],
+    permissions: normalizado.permissions || {},
+    ativo: normalizado.ativo !== false,
+    must_change_password: normalizado.mustChangePassword === true,
+  };
+}
+
+function fromDbUserRow(row) {
+  return normalizeUser({
+    ...row,
+    mustChangePassword: row?.must_change_password === true,
+  });
+}
+
+function loadTriangulacoes() {
+  return safeLocalStorageGet(STORAGE_KEY_TRI, []);
+}
+
+function saveTriangulacoes(lista) {
+  safeLocalStorageSet(STORAGE_KEY_TRI, lista);
+}
+
+function formatMoney(value) {
+  return Number(value || 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
+}
+
+function roleCanViewAll(usuario) {
+  return ["Admin", "Gerente", "Coordenador", "SUP. Almoxarifado"].includes(
+    usuario?.cargo
+  );
+}
+
+function roleCanManageItems(usuario) {
+  return userHasPermission(usuario, "cadastroItens");
+}
+
+function roleCanManageUsers(usuario) {
+  return ["Admin", "Gerente"].includes(usuario?.cargo);
+}
+
+function roleCanManageCC(usuario, cc) {
+  if (!usuario) return false;
+  if (["Admin", "Gerente", "SUP. Almoxarifado"].includes(usuario.cargo)) {
+    return true;
+  }
+  if (["Coordenador", "Ass.Logistica"].includes(usuario.cargo)) {
+    return (usuario.ccs || []).includes(cc);
+  }
+  return false;
+}
+
+function roleCanViewCC(usuario, cc) {
+  if (!usuario) return false;
+  if (roleCanViewAll(usuario)) return true;
+  return (usuario.ccs || []).includes(cc);
+}
+
+function roleCanApproveTriangulacao(usuario, origem, destino) {
+  if (!usuario || !canUseTriangulacao(usuario) || !userHasPermission(usuario, "triangulacaoAprovar")) return false;
+  if (["Admin", "Gerente"].includes(usuario.cargo)) return true;
+  if (usuario.cargo === "Coordenador") {
+    return (usuario.ccs || []).includes(origem) && (usuario.ccs || []).includes(destino);
+  }
+  return false;
+}
+
+function canUseTriangulacao(usuario) {
+  return userHasPermission(usuario, "triangulacaoAcesso");
+}
+
+function canRequestTriangulacao(usuario) {
+  return canUseTriangulacao(usuario) && userHasPermission(usuario, "triangulacaoSolicitar");
+}
+
+function roleCanCreateCadastrosTecnicos(usuario, cc) {
+  if (!usuario || !userHasPermission(usuario, "cadastroTecnicos")) return false;
+  if (["Admin", "Gerente", "SUP. Almoxarifado"].includes(usuario.cargo)) return true;
+  if (["Coordenador", "Ass.Logistica"].includes(usuario.cargo)) {
+    return (usuario.ccs || []).includes(cc);
+  }
+  return false;
+}
+
+function canViewDashboardValues(usuario) {
+  return userHasPermission(usuario, "visualizarValores");
+}
+
+function parseCCsValue(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function downloadWorkbook(filename, sheetName, rows) {
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX.writeFile(wb, filename);
+}
+
+function readExcelValue(row, aliases) {
+  const normalized = Object.fromEntries(
+    Object.entries(row || {}).map(([key, value]) => [normalizeHeaderKey(key), value])
+  );
+  for (const alias of aliases) {
+    const value = normalized[normalizeHeaderKey(alias)];
+    if (value !== undefined) return value;
+  }
+  return "";
+}
+
+function getSupabaseErrorMessage(error, fallback) {
+  if (!error) return fallback;
+  const raw = [error.message, error.code, error.details]
+    .filter(Boolean)
+    .join(" | ");
+  const normalized = String(raw || "").toLowerCase();
+
+  if (
+    normalized.includes("failed to fetch") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("networkerror") ||
+    normalized.includes("timeout")
+  ) {
+    return "Falha de conexão com o banco (rede/timeout). Verifique internet, firewall/proxy e tente novamente.";
+  }
+
+  return raw || fallback;
+}
+
+async function withQueryTimeout(promise, label, timeoutMs = 12000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout: ${label}`)), timeoutMs)
+    ),
+  ]);
+}
+
+function validarPoliticaSenha(senha) {
+  const valor = String(senha || "").trim();
+  if (valor.length < 8) {
+    return "A senha deve ter pelo menos 8 caracteres.";
+  }
+  if (!/\d/.test(valor)) {
+    return "A senha deve conter pelo menos 1 número.";
+  }
+  return null;
+}
+
 export default function App() {
-  const [logado, setLogado] = useState(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY_AUTH) === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  const [usuario, setUsuario] = useState("");
-  const [senha, setSenha] = useState("");
+  const [usuariosSistema, setUsuariosSistema] = useState([]);
+  const [carregandoUsuarios, setCarregandoUsuarios] = useState(true);
+  const [erroUsuarios, setErroUsuarios] = useState("");
+  const [usuarioAtual, setUsuarioAtual] = useState(() =>
+    safeLocalStorageGet(STORAGE_KEY_AUTH, null)
+  );
+  const [usuarioLogin, setUsuarioLogin] = useState("");
+  const [senhaLogin, setSenhaLogin] = useState("");
+  const [novaSenhaObrigatoria, setNovaSenhaObrigatoria] = useState("");
+  const [confirmarSenhaObrigatoria, setConfirmarSenhaObrigatoria] = useState("");
   const [pagina, setPagina] = useState("dashboard");
+  const [carregando, setCarregando] = useState(true);
+  const [carregandoMovimentacoes, setCarregandoMovimentacoes] = useState(true);
 
-  const [itens, setItens] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_ITEMS);
-      if (!saved) return [];
+  const [itens, setItens] = useState([]);
+  const [itemForm, setItemForm] = useState(emptyItemForm);
 
-      const parsed = JSON.parse(saved);
-      if (!Array.isArray(parsed)) return [];
+  const [tecnicos, setTecnicos] = useState([]);
+  const [tecnicoForm, setTecnicoForm] = useState(emptyTecnicoForm);
 
-      return parsed.map(normalizarItem);
-    } catch {
-      return [];
-    }
-  });
+  const [movimentacoes, setMovimentacoes] = useState([]);
+  const [movForm, setMovForm] = useState(emptyMovForm);
+  const [loteMovimentacoes, setLoteMovimentacoes] = useState([]);
 
-  const [itemForm, setItemForm] = useState({
-    codigo: "",
+  const [triangulacoes, setTriangulacoes] = useState(() => loadTriangulacoes());
+  const [triForm, setTriForm] = useState(emptyTriForm);
+
+  const [estoqueFiltro, setEstoqueFiltro] = useState({ cc: "", tecnico_id: "", item_id: "" });
+
+  const [usuarioForm, setUsuarioForm] = useState({
     nome: "",
-    valor: "",
-    qtdKit: "",
-    minimos: emptyMinimos(),
+    usuario: "",
+    senha: "",
+    cargo: "Gerente",
+    ccs: [...CCS],
+    ativo: true,
+    permissions: getDefaultPermissions("Gerente"),
   });
+  const [usuarioExpandidoId, setUsuarioExpandidoId] = useState(null);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_ITEMS, JSON.stringify(itens));
-    } catch {
-      // evita quebrar caso localStorage falhe
-    }
-  }, [itens]);
+    saveTriangulacoes(triangulacoes);
+  }, [triangulacoes]);
 
-  const login = () => {
-    if (usuario === "admin" && senha === "admin123") {
-      setLogado(true);
-      localStorage.setItem(STORAGE_KEY_AUTH, "true");
-    } else {
-      alert("Login inválido");
+  useEffect(() => {
+    if (pagina === "usuarios" && !roleCanManageUsers(usuarioAtual)) {
+      setPagina("dashboard");
+    }
+  }, [pagina, usuarioAtual]);
+
+  const carregarUsuariosSistema = async () => {
+    setCarregandoUsuarios(true);
+    const timeoutMs = 12000;
+    const withTimeout = (promise, label) =>
+      Promise.race([
+        promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout: ${label}`)), timeoutMs)
+        ),
+      ]);
+
+    try {
+      let data = null;
+      let queryError = null;
+      try {
+        const resultado = await withTimeout(
+          supabase.from("usuarios").select("*").order("nome", { ascending: true }),
+          "buscar usuários"
+        );
+        data = resultado?.data ?? null;
+        queryError = resultado?.error ?? null;
+      } catch (err) {
+        queryError = err;
+      }
+
+      if (queryError) {
+        console.error(queryError);
+        setUsuariosSistema([]);
+        setErroUsuarios(
+          getSupabaseErrorMessage(
+            queryError,
+            "Não foi possível conectar no banco para carregar usuários."
+          )
+        );
+        return;
+      }
+
+      if (!Array.isArray(data) || data.length === 0) {
+        const adminPadrao = normalizeUser({
+          id: uid(),
+          nome: "Administrador",
+          usuario: "admin",
+          senha: "admin123",
+          cargo: "Admin",
+          ccs: [...CCS],
+          ativo: true,
+        });
+        let insertError = null;
+        try {
+          const insertResult = await withTimeout(
+            supabase.from("usuarios").insert([toDbUserPayload(adminPadrao)]),
+            "inserir admin inicial"
+          );
+          insertError = insertResult?.error ?? null;
+        } catch (err) {
+          insertError = err;
+        }
+        if (insertError) {
+          console.error(insertError);
+          setUsuariosSistema([]);
+          setErroUsuarios("Tabela de usuários vazia e não foi possível criar o admin inicial.");
+        } else {
+          setUsuariosSistema([adminPadrao]);
+          setErroUsuarios("");
+        }
+        return;
+      }
+
+      setUsuariosSistema(data.map(fromDbUserRow));
+      setErroUsuarios("");
+    } finally {
+      setCarregandoUsuarios(false);
     }
   };
 
+  const buscarItens = async () => {
+    let data = null;
+    let error = null;
+    try {
+      const resultado = await withQueryTimeout(
+        supabase.from("itens").select("*").order("id", { ascending: false }),
+        "buscar itens"
+      );
+      data = resultado?.data || null;
+      error = resultado?.error || null;
+    } catch (err) {
+      error = err;
+    }
+    if (error) {
+      console.error(error);
+      alert(getSupabaseErrorMessage(error, "Erro ao buscar itens no banco."));
+      return;
+    }
+    setItens(
+      (data || []).map((item) => ({
+        ...item,
+        valor: Number(item.valor || 0),
+        qtdKit: Number(item.qtd_kit || 0),
+        minimos: item.minimos || {},
+      }))
+    );
+  };
+
+  const buscarTecnicos = async () => {
+    let data = null;
+    let error = null;
+    try {
+      const resultado = await withQueryTimeout(
+        supabase.from("tecnicos").select("*").order("nome", { ascending: true }),
+        "buscar técnicos"
+      );
+      data = resultado?.data || null;
+      error = resultado?.error || null;
+    } catch (err) {
+      error = err;
+    }
+    if (error) {
+      console.error(error);
+      alert(getSupabaseErrorMessage(error, "Erro ao buscar técnicos."));
+      return;
+    }
+    setTecnicos(data || []);
+  };
+
+  const buscarMovimentacoes = async () => {
+    let data = null;
+    let error = null;
+    try {
+      const resultado = await withQueryTimeout(
+        supabase
+          .from("movimentacoes")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false }),
+        "buscar movimentações"
+      );
+      data = resultado?.data || null;
+      error = resultado?.error || null;
+    } catch (err) {
+      error = err;
+    }
+    if (error) {
+      console.error(error);
+      alert(getSupabaseErrorMessage(error, "Erro ao buscar movimentações."));
+      return;
+    }
+    setMovimentacoes(data || []);
+  };
+
+  const carregarTudo = async () => {
+    setCarregando(true);
+    setCarregandoMovimentacoes(true);
+    try {
+      await Promise.allSettled([buscarItens(), buscarTecnicos()]);
+    } finally {
+      setCarregando(false);
+    }
+    try {
+      await buscarMovimentacoes();
+    } finally {
+      setCarregandoMovimentacoes(false);
+    }
+  };
+
+  useEffect(() => {
+    carregarTudo();
+  }, []);
+
+  useEffect(() => {
+    carregarUsuariosSistema();
+  }, []);
+
+  useEffect(() => {
+    if (!usuarioAtual) return;
+    const atualizado = normalizeUser(usuarioAtual);
+    if (JSON.stringify(atualizado) !== JSON.stringify(usuarioAtual)) {
+      setUsuarioAtual(atualizado);
+      safeLocalStorageSet(STORAGE_KEY_AUTH, atualizado);
+    }
+  }, [usuarioAtual]);
+
+  const itensById = useMemo(
+    () => Object.fromEntries(itens.map((item) => [Number(item.id), item])),
+    [itens]
+  );
+  const tecnicosById = useMemo(
+    () => Object.fromEntries(tecnicos.map((tecnico) => [Number(tecnico.id), tecnico])),
+    [tecnicos]
+  );
+
+  const saldoEstoqueCCItem = useMemo(() => {
+    const mapa = {};
+    movimentacoes.forEach((mov) => {
+      const cc = mov.cc || "SEM_CC";
+      const itemId = Number(mov.item_id);
+      const chave = `${cc}-${itemId}`;
+      const quantidade = Number(mov.quantidade || 0);
+      if (!mapa[chave]) mapa[chave] = 0;
+
+      if (["entrada", "devolucao_tecnico", "ajuste_positivo", "triangulacao_entrada"].includes(mov.tipo)) {
+        mapa[chave] += quantidade;
+      }
+
+      if ([
+        "saida_tecnico",
+        "ajuste_negativo",
+        "substituicao_perda",
+        "substituicao_quebra",
+        "substituicao_desgaste",
+        "triangulacao_saida",
+      ].includes(mov.tipo)) {
+        mapa[chave] -= quantidade;
+      }
+    });
+    return mapa;
+  }, [movimentacoes]);
+
+  const saldoTecnicoItem = useMemo(() => {
+    const mapa = {};
+    movimentacoes.forEach((mov) => {
+      if (!mov.tecnico_id) return;
+      const tecnicoId = Number(mov.tecnico_id);
+      const itemId = Number(mov.item_id);
+      const chave = `${tecnicoId}-${itemId}`;
+      const quantidade = Number(mov.quantidade || 0);
+      if (!mapa[chave]) mapa[chave] = 0;
+
+      if (mov.tipo === "saida_tecnico") mapa[chave] += quantidade;
+      if (mov.tipo === "devolucao_tecnico") mapa[chave] -= quantidade;
+    });
+    return mapa;
+  }, [movimentacoes]);
+
+  const estoquePorTecnico = useMemo(() => {
+    return Object.entries(saldoTecnicoItem)
+      .map(([chave, quantidade]) => {
+        const [tecnicoId, itemId] = chave.split("-");
+        const tecnico = tecnicosById[Number(tecnicoId)];
+        const item = itensById[Number(itemId)];
+        return {
+          tecnico_id: Number(tecnicoId),
+          item_id: Number(itemId),
+          tecnicoNome: tecnico?.nome || "-",
+          cc: tecnico?.cc || "-",
+          itemNome: item?.nome || `Item #${itemId}`,
+          quantidade: Number(quantidade || 0),
+        };
+      })
+      .filter((registro) => registro.quantidade > 0)
+      .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+      .sort((a, b) => a.tecnicoNome.localeCompare(b.tecnicoNome, "pt-BR"));
+  }, [saldoTecnicoItem, tecnicosById, itensById, usuarioAtual]);
+
+  const estoqueGeral = useMemo(() => {
+  const mapa = {};
+
+  Object.entries(saldoEstoqueCCItem).forEach(([chave, quantidade]) => {
+    const splitIndex = chave.lastIndexOf("-");
+    const cc = chave.slice(0, splitIndex);
+    const itemId = Number(chave.slice(splitIndex + 1));
+    const item = itensById[itemId];
+
+    const registroKey = `${cc}-${itemId}`;
+
+    if (!mapa[registroKey]) {
+      mapa[registroKey] = {
+        cc,
+        itemId,
+        itemNome: item?.nome || `Item #${itemId}`,
+        estoque: 0,
+        comTecnico: 0,
+        minimo: Number(item?.minimos?.[cc] || 0),
+        valor: Number(item?.valor || 0),
+      };
+    }
+
+    mapa[registroKey].estoque = Number(quantidade || 0);
+  });
+
+  Object.entries(saldoTecnicoItem).forEach(([chave, quantidade]) => {
+    const splitIndex = chave.lastIndexOf("-");
+    const tecnicoId = Number(chave.slice(0, splitIndex));
+    const itemId = Number(chave.slice(splitIndex + 1));
+
+    const tecnico = tecnicosById[tecnicoId];
+    if (!tecnico) return;
+
+    const cc = tecnico.cc;
+    const item = itensById[itemId];
+    const registroKey = `${cc}-${itemId}`;
+
+    if (!mapa[registroKey]) {
+      mapa[registroKey] = {
+        cc,
+        itemId,
+        itemNome: item?.nome || `Item #${itemId}`,
+        estoque: 0,
+        comTecnico: 0,
+        minimo: Number(item?.minimos?.[cc] || 0),
+        valor: Number(item?.valor || 0),
+      };
+    }
+
+    mapa[registroKey].comTecnico += Number(quantidade || 0);
+  });
+
+  return Object.values(mapa)
+    .map((registro) => ({
+      ...registro,
+      total: Number(registro.estoque || 0) + Number(registro.comTecnico || 0),
+    }))
+    .sort((a, b) => {
+      const ccCompare = a.cc.localeCompare(b.cc, "pt-BR");
+      if (ccCompare !== 0) return ccCompare;
+      return a.itemNome.localeCompare(b.itemNome, "pt-BR");
+    });
+}, [saldoEstoqueCCItem, saldoTecnicoItem, itensById, tecnicosById]);
+
+  const indicadoresDashboard = useMemo(() => {
+    const itensCriticos = estoqueGeral.filter(
+      (registro) =>
+        roleCanViewCC(usuarioAtual, registro.cc) &&
+        registro.minimo > 0 &&
+        Number(registro.estoque || 0) < Number(registro.minimo || 0)
+    );
+
+    const substituicoes = {};
+    movimentacoes.forEach((mov) => {
+      if (!["substituicao_perda", "substituicao_quebra", "substituicao_desgaste"].includes(mov.tipo)) return;
+      const item = itensById[Number(mov.item_id)];
+      const cc = mov.cc || "";
+      if (!roleCanViewCC(usuarioAtual, cc)) return;
+      const chave = String(mov.item_id);
+      if (!substituicoes[chave]) {
+        substituicoes[chave] = {
+          item_id: Number(mov.item_id),
+          itemNome: item?.nome || `Item #${mov.item_id}`,
+          total: 0,
+          perda: 0,
+          quebra: 0,
+          desgaste: 0,
+        };
+      }
+      const qtd = Number(mov.quantidade || 0);
+      substituicoes[chave].total += qtd;
+      if (mov.tipo === "substituicao_perda") substituicoes[chave].perda += qtd;
+      if (mov.tipo === "substituicao_quebra") substituicoes[chave].quebra += qtd;
+      if (mov.tipo === "substituicao_desgaste") substituicoes[chave].desgaste += qtd;
+    });
+
+    const itemMaisSubstituido = Object.values(substituicoes).sort((a, b) => b.total - a.total)[0] || null;
+
+    return {
+      itensCriticos,
+      itemMaisSubstituido,
+      totalItens: itens.length,
+      totalKitsDisponiveis: estoqueGeral
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .reduce((acc, registro) => {
+          const qtdKit = Number(itensById[Number(registro.itemId)]?.qtdKit || 0);
+          if (qtdKit <= 0) return acc;
+          return acc + Math.floor(Number(registro.estoque || 0) / qtdKit);
+        }, 0),
+      totalTecnicos: tecnicos.filter((tec) => roleCanViewCC(usuarioAtual, tec.cc)).length,
+      totalNoEstoque: estoqueGeral
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .reduce((acc, item) => acc + Number(item.estoque || 0), 0),
+      totalComTecnicos: estoquePorTecnico.reduce((acc, item) => acc + Number(item.quantidade || 0), 0),
+      valorTotalNoEstoque: estoqueGeral
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .reduce((acc, item) => acc + Number(item.estoque || 0) * Number(item.valor || 0), 0),
+      valorTotalComTecnicos: estoqueGeral
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .reduce((acc, item) => acc + Number(item.comTecnico || 0) * Number(item.valor || 0), 0),
+    };
+  }, [estoqueGeral, movimentacoes, itens, itensById, tecnicos, estoquePorTecnico, usuarioAtual]);
+
+  const login = () => {
+    if (carregandoUsuarios) {
+      alert("Aguarde, carregando usuários...");
+      return;
+    }
+    if (erroUsuarios) {
+      alert(erroUsuarios);
+      return;
+    }
+    const encontrado = usuariosSistema.find(
+      (u) => u.ativo !== false && u.usuario === usuarioLogin.trim() && u.senha === senhaLogin
+    );
+    if (!encontrado) {
+      alert("Login inválido.");
+      return;
+    }
+    const usuarioNormalizado = normalizeUser(encontrado);
+    setUsuarioAtual(usuarioNormalizado);
+    safeLocalStorageSet(STORAGE_KEY_AUTH, usuarioNormalizado);
+  };
+
   const sair = () => {
-    setLogado(false);
-    setUsuario("");
-    setSenha("");
+    setUsuarioAtual(null);
+    setUsuarioLogin("");
+    setSenhaLogin("");
+    setNovaSenhaObrigatoria("");
+    setConfirmarSenhaObrigatoria("");
     setPagina("dashboard");
     localStorage.removeItem(STORAGE_KEY_AUTH);
   };
 
-  const atualizarMinimo = (cc, valor) => {
-    setItemForm((prev) => ({
-      ...prev,
-      minimos: {
-        ...prev.minimos,
-        [cc]: valor,
-      },
-    }));
+  const alterarSenhaObrigatoria = () => {
+    if (!usuarioAtual) return;
+    if (!novaSenhaObrigatoria.trim() || !confirmarSenhaObrigatoria.trim()) {
+      alert("Preencha a nova senha e a confirmação.");
+      return;
+    }
+    if (novaSenhaObrigatoria !== confirmarSenhaObrigatoria) {
+      alert("A confirmação da senha não confere.");
+      return;
+    }
+    const erroSenha = validarPoliticaSenha(novaSenhaObrigatoria);
+    if (erroSenha) {
+      alert(erroSenha);
+      return;
+    }
+
+    const senhaAtualizada = novaSenhaObrigatoria.trim();
+
+    supabase
+      .from("usuarios")
+      .update({ senha: senhaAtualizada, must_change_password: false })
+      .eq("id", usuarioAtual.id)
+      .then(({ error }) => {
+        if (error) console.error(error);
+      });
+
+    setUsuariosSistema((prev) =>
+      prev.map((u) =>
+        u.id === usuarioAtual.id
+          ? normalizeUser({ ...u, senha: senhaAtualizada, mustChangePassword: false })
+          : normalizeUser(u)
+      )
+    );
+
+    const usuarioAtualizado = normalizeUser({
+      ...usuarioAtual,
+      senha: senhaAtualizada,
+      mustChangePassword: false,
+    });
+    setUsuarioAtual(usuarioAtualizado);
+    safeLocalStorageSet(STORAGE_KEY_AUTH, usuarioAtualizado);
+    setNovaSenhaObrigatoria("");
+    setConfirmarSenhaObrigatoria("");
+    alert("Senha alterada com sucesso.");
   };
 
-  const cadastrarItem = () => {
+  const cadastrarItem = async () => {
+    if (!roleCanManageItems(usuarioAtual)) {
+      alert("Seu perfil não pode cadastrar itens.");
+      return;
+    }
     if (!itemForm.codigo.trim() || !itemForm.nome.trim()) {
       alert("Preencha o código e o nome do item.");
       return;
     }
 
-    const novoItem = normalizarItem({
-      id: Date.now(),
-      codigo: itemForm.codigo,
-      nome: itemForm.nome,
-      valor: itemForm.valor,
-      qtdKit: itemForm.qtdKit,
-      minimos: itemForm.minimos,
-    });
+    const payload = {
+      codigo: itemForm.codigo.trim(),
+      nome: itemForm.nome.trim(),
+      valor: Number(itemForm.valor || 0),
+      qtd_kit: Number(itemForm.qtdKit || 0),
+      minimos: Object.fromEntries(CCS.map((cc) => [cc, Number(itemForm.minimos[cc] || 0)])),
+    };
 
-    setItens((prev) => [...prev, novoItem]);
-
-    setItemForm({
-      codigo: "",
-      nome: "",
-      valor: "",
-      qtdKit: "",
-      minimos: emptyMinimos(),
-    });
-  };
-
-  const excluirItem = (id) => {
-    setItens((prev) => prev.filter((item) => item.id !== id));
-  };
-
-  const exportarCSV = () => {
-    if (itens.length === 0) {
-      alert("Nenhum item para exportar");
+    const { error } = await supabase.from("itens").insert([payload]);
+    if (error) {
+      console.error(error);
+      alert("Erro ao salvar item no banco.");
       return;
     }
-
-    const headers = [
-      "codigo",
-      "nome",
-      "valor",
-      "qtdKit",
-      ...CCS,
-    ];
-
-    const rows = itens.map((item) => [
-      item.codigo,
-      item.nome,
-      item.valor,
-      item.qtdKit,
-      ...CCS.map((cc) => item.minimos?.[cc] ?? 0),
-    ]);
-
-    const csvContent = [headers, ...rows]
-      .map((linha) => linha.join(";"))
-      .join("\n");
-
-    const blob = new Blob([csvContent], {
-      type: "text/csv;charset=utf-8;",
-    });
-
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = "itens.csv";
-    link.click();
-    URL.revokeObjectURL(link.href);
+    await buscarItens();
+    setItemForm(emptyItemForm());
   };
 
-  const baixarModeloCSV = () => {
-    const headers = [
-      "codigo",
-      "nome",
-      "valor",
-      "qtdKit",
-      ...CCS,
-    ];
-
-    const exemplo = [
-      "001",
-      "Alicate Universal",
-      "45.90",
-      "1",
-      "2",
-      "3",
-      "2",
-      "4",
-      "1",
-      "2",
-    ];
-
-    const csvContent = [headers, exemplo]
-      .map((linha) => linha.join(";"))
-      .join("\n");
-
-    const blob = new Blob([csvContent], {
-      type: "text/csv;charset=utf-8;",
-    });
-
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = "modelo_itens.csv";
-    link.click();
-    URL.revokeObjectURL(link.href);
+  const excluirItem = async (id) => {
+    if (!roleCanManageItems(usuarioAtual)) {
+      alert("Seu perfil não pode excluir itens.");
+      return;
+    }
+    const possuiMovimentacao = movimentacoes.some((mov) => Number(mov.item_id) === Number(id));
+    if (possuiMovimentacao) {
+      alert("Este item já possui movimentações vinculadas.");
+      return;
+    }
+    const { error } = await supabase.from("itens").delete().eq("id", id);
+    if (error) {
+      console.error(error);
+      alert("Erro ao excluir item.");
+      return;
+    }
+    await buscarItens();
   };
 
-  const importarCSV = (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const exportarItensExcel = () => {
+    const rows = itens.map((item) => ({
+      [ITEM_HEADER_CODIGO]: item.codigo,
+      [ITEM_HEADER_NOME]: item.nome,
+      [ITEM_HEADER_VALOR]: Number(item.valor || 0),
+      [ITEM_HEADER_QTD_KIT]: Number(item.qtdKit || item.qtd_kit || 0),
+      ...Object.fromEntries(
+        ITEM_MINIMO_HEADERS.map(({ cc, header }) => [header, Number(item.minimos?.[cc] || 0)])
+      ),
+    }));
+    downloadWorkbook("itens_ferramentaria.xlsx", "Itens", rows);
+  };
 
-    const reader = new FileReader();
+  const baixarModeloItensExcel = () => {
+    const modelo = {
+      [ITEM_HEADER_CODIGO]: "",
+      [ITEM_HEADER_NOME]: "",
+      [ITEM_HEADER_VALOR]: 0,
+      [ITEM_HEADER_QTD_KIT]: 0,
+      ...Object.fromEntries(ITEM_MINIMO_HEADERS.map(({ header }) => [header, 0])),
+    };
+    downloadWorkbook("modelo_itens_ferramentaria.xlsx", "Itens", [modelo]);
+  };
 
-    reader.onload = (e) => {
-      const texto = e.target?.result;
-      if (!texto) return;
+  const importarItensExcel = async (event) => {
+    if (!roleCanManageItems(usuarioAtual)) {
+      alert("Seu perfil não pode importar itens.");
+      return;
+    }
+    const arquivo = event.target.files?.[0];
+    event.target.value = "";
+    if (!arquivo) return;
 
-      const linhas = String(texto)
-        .split(/\r?\n/)
-        .filter((linha) => linha.trim() !== "");
+    try {
+      const buffer = await arquivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      const headers = new Set(
+        rows.flatMap((row) => Object.keys(row).map((key) => normalizeHeaderKey(key)))
+      );
 
-      if (linhas.length < 2) {
-        alert("Arquivo CSV vazio ou inválido.");
+      const possuiCodigo = headers.has(normalizeHeaderKey(ITEM_HEADER_CODIGO));
+      const possuiNome = headers.has(normalizeHeaderKey(ITEM_HEADER_NOME));
+      if (!possuiCodigo || !possuiNome) {
+        alert(
+          "Planilha fora do padrão. Use o modelo de itens (colunas obrigatórias: CODIGO e NOME)."
+        );
         return;
       }
 
-      const headers = linhas[0].split(";").map((h) => h.trim());
-
-      const novosItens = linhas.slice(1).map((linha) => {
-        const colunas = linha.split(";");
-        const registro = {};
-
-        headers.forEach((header, index) => {
-          registro[header] = (colunas[index] || "").trim();
-        });
-
-        return normalizarItem({
-          id: Date.now() + Math.random(),
-          codigo: registro["codigo"],
-          nome: registro["nome"],
-          valor: registro["valor"],
-          qtdKit: registro["qtdKit"],
+      const payload = rows
+        .filter(
+          (row) =>
+            String(readExcelValue(row, [ITEM_HEADER_CODIGO, "codigo"])).trim() &&
+            String(readExcelValue(row, [ITEM_HEADER_NOME, "nome"])).trim()
+        )
+        .map((row) => ({
+          codigo: String(readExcelValue(row, [ITEM_HEADER_CODIGO, "codigo"])).trim(),
+          nome: String(readExcelValue(row, [ITEM_HEADER_NOME, "nome"])).trim(),
+          valor: Number(readExcelValue(row, [ITEM_HEADER_VALOR, "valor"]) || 0),
+          qtd_kit: Number(readExcelValue(row, [ITEM_HEADER_QTD_KIT, "qtd_kit", "qtdkit", "qtdKit"]) || 0),
           minimos: Object.fromEntries(
-            CCS.map((cc) => [cc, registro[cc] || 0])
+            ITEM_MINIMO_HEADERS.map(({ cc, header }) => [
+              cc,
+              Number(readExcelValue(row, [header, cc, `MINIMO_${cc}`, `minimo_${cc}`]) || 0),
+            ])
           ),
-        });
-      });
+        }));
 
-      const itensValidos = novosItens.filter(
-        (item) => item.codigo.trim() && item.nome.trim()
-      );
+      if (!payload.length) {
+        alert("Nenhuma linha válida encontrada na planilha.");
+        return;
+      }
 
-      setItens((prev) => [...prev, ...itensValidos]);
-      alert(`${itensValidos.length} item(ns) importado(s) com sucesso.`);
-      event.target.value = "";
-    };
-
-    reader.readAsText(file, "utf-8");
+      const { error } = await supabase.from("itens").insert(payload);
+      if (error) throw error;
+      await buscarItens();
+      alert(`${payload.length} item(ns) importado(s) com sucesso.`);
+    } catch (error) {
+      console.error(error);
+      alert("Erro ao importar planilha de itens.");
+    }
   };
 
-  const totalItens = itens.length;
-  const totalTecnicos = 0;
+  const cadastrarTecnico = async () => {
+    if (!roleCanCreateCadastrosTecnicos(usuarioAtual, tecnicoForm.cc)) {
+      alert("Seu perfil não pode cadastrar técnicos nesse CC.");
+      return;
+    }
+    if (!tecnicoForm.nome.trim() || !tecnicoForm.cc) {
+      alert("Preencha o nome e o centro de custo.");
+      return;
+    }
+    const { error } = await supabase.from("tecnicos").insert([{ nome: tecnicoForm.nome.trim(), cc: tecnicoForm.cc }]);
+    if (error) {
+      console.error(error);
+      alert("Erro ao salvar técnico.");
+      return;
+    }
+    await buscarTecnicos();
+    setTecnicoForm(emptyTecnicoForm());
+  };
 
-  const kitsHoje = useMemo(() => {
-    const itensComKit = itens.filter((item) => Number(item.qtdKit) > 0);
-    if (!itensComKit.length) return 0;
-    return 0;
-  }, [itens]);
+  const excluirTecnico = async (id) => {
+    const tecnico = tecnicosById[Number(id)];
+    if (!tecnico || !roleCanCreateCadastrosTecnicos(usuarioAtual, tecnico.cc)) {
+      alert("Seu perfil não pode excluir este técnico.");
+      return;
+    }
+    const possuiMovimentacao = movimentacoes.some((mov) => Number(mov.tecnico_id) === Number(id));
+    if (possuiMovimentacao) {
+      alert("Este técnico já possui movimentações vinculadas.");
+      return;
+    }
+    const { error } = await supabase.from("tecnicos").delete().eq("id", id);
+    if (error) {
+      console.error(error);
+      alert("Erro ao excluir técnico.");
+      return;
+    }
+    await buscarTecnicos();
+  };
 
-  if (!logado) {
+  const exportarTecnicosExcel = () => {
+    const rows = tecnicos
+      .filter((tec) => roleCanViewCC(usuarioAtual, tec.cc))
+      .map((tec) => ({ [TECNICO_HEADER_NOME]: tec.nome, [TECNICO_HEADER_CC]: tec.cc }));
+    downloadWorkbook("tecnicos_ferramentaria.xlsx", "Tecnicos", rows);
+  };
+
+  const baixarModeloTecnicosExcel = () => {
+    downloadWorkbook("modelo_tecnicos_ferramentaria.xlsx", "Tecnicos", [
+      { [TECNICO_HEADER_NOME]: "", [TECNICO_HEADER_CC]: "" },
+    ]);
+  };
+
+  const importarTecnicosExcel = async (event) => {
+    const arquivo = event.target.files?.[0];
+    event.target.value = "";
+    if (!arquivo) return;
+
+    try {
+      const buffer = await arquivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      const headers = new Set(
+        rows.flatMap((row) => Object.keys(row).map((key) => normalizeHeaderKey(key)))
+      );
+      const possuiNome = headers.has(normalizeHeaderKey(TECNICO_HEADER_NOME));
+      const possuiCC = headers.has(normalizeHeaderKey(TECNICO_HEADER_CC));
+      if (!possuiNome || !possuiCC) {
+        alert("Planilha fora do padrão. Use o modelo de técnicos (colunas obrigatórias: NOME e CC).");
+        return;
+      }
+
+      const payload = rows
+        .map((row) => ({
+          nome: String(readExcelValue(row, [TECNICO_HEADER_NOME, "nome"])).trim(),
+          cc: String(readExcelValue(row, [TECNICO_HEADER_CC, "cc"])).trim(),
+        }))
+        .filter((row) => row.nome && row.cc && roleCanCreateCadastrosTecnicos(usuarioAtual, row.cc));
+
+      if (!payload.length) {
+        alert("Nenhuma linha válida encontrada para importação.");
+        return;
+      }
+
+      const { error } = await supabase.from("tecnicos").insert(payload);
+      if (error) throw error;
+      await buscarTecnicos();
+      alert(`${payload.length} técnico(s) importado(s) com sucesso.`);
+    } catch (error) {
+      console.error(error);
+      alert("Erro ao importar planilha de técnicos.");
+    }
+  };
+
+  const validarLinhaMovimentacao = (linha) => {
+    if (!linha.tipo || !linha.item_id || !linha.cc || !linha.quantidade) {
+      return "Preencha tipo, item, CC e quantidade.";
+    }
+
+    if (!roleCanManageCC(usuarioAtual, linha.cc)) {
+      return "Seu perfil não pode movimentar estoque neste CC.";
+    }
+
+    const quantidade = Number(linha.quantidade || 0);
+    if (!Number.isFinite(quantidade) || quantidade <= 0) {
+      return "Informe uma quantidade válida maior que zero.";
+    }
+
+    const exigeTecnico = [
+      "saida_tecnico",
+      "devolucao_tecnico",
+      "substituicao_perda",
+      "substituicao_quebra",
+      "substituicao_desgaste",
+    ].includes(linha.tipo);
+
+    if (exigeTecnico && !linha.tecnico_id) {
+      return "Selecione o técnico para este tipo de movimentação.";
+    }
+
+    const tecnico = tecnicosById[Number(linha.tecnico_id)];
+    if (exigeTecnico && tecnico && tecnico.cc !== linha.cc) {
+      return "O técnico selecionado não pertence ao CC informado.";
+    }
+
+    const itemId = Number(linha.item_id);
+    const tecnicoId = linha.tecnico_id ? Number(linha.tecnico_id) : null;
+    const chaveEstoque = `${linha.cc}-${itemId}`;
+    const chaveTecnico = tecnicoId ? `${tecnicoId}-${itemId}` : null;
+    const saldoAtualEstoque = Number(saldoEstoqueCCItem[chaveEstoque] || 0);
+    const saldoAtualTecnico = chaveTecnico ? Number(saldoTecnicoItem[chaveTecnico] || 0) : 0;
+
+    if (["saida_tecnico", "ajuste_negativo"].includes(linha.tipo) && quantidade > saldoAtualEstoque) {
+      return `Saldo insuficiente no estoque. Saldo atual: ${saldoAtualEstoque}.`;
+    }
+
+    if (["substituicao_perda", "substituicao_quebra", "substituicao_desgaste"].includes(linha.tipo)) {
+      if (quantidade > saldoAtualEstoque) {
+        return `Saldo insuficiente no estoque para substituição. Saldo atual: ${saldoAtualEstoque}.`;
+      }
+      if (quantidade > saldoAtualTecnico) {
+        return `O técnico não possui essa quantidade do item. Saldo com técnico: ${saldoAtualTecnico}.`;
+      }
+    }
+
+    if (linha.tipo === "devolucao_tecnico" && quantidade > saldoAtualTecnico) {
+      return `O técnico não possui essa quantidade para devolver. Saldo com técnico: ${saldoAtualTecnico}.`;
+    }
+
+    return null;
+  };
+
+  const adicionarAoLote = () => {
+    const erro = validarLinhaMovimentacao(movForm);
+    if (erro) {
+      alert(erro);
+      return;
+    }
+
+    setLoteMovimentacoes((prev) => [...prev, { ...movForm, localId: uid() }]);
+    setMovForm((prev) => ({ ...emptyMovForm(), cc: prev.cc }));
+  };
+
+  const removerDoLote = (localId) => {
+    setLoteMovimentacoes((prev) => prev.filter((item) => item.localId !== localId));
+  };
+
+  const salvarLoteMovimentacoes = async () => {
+    if (!loteMovimentacoes.length) {
+      alert("Adicione ao menos uma linha no lote antes de salvar.");
+      return;
+    }
+
+    const linhasCobranca = loteMovimentacoes.filter((linha) => ["substituicao_perda", "substituicao_quebra"].includes(linha.tipo));
+    if (linhasCobranca.length) {
+      const itensTexto = linhasCobranca
+        .map((linha) => {
+          const item = itensById[Number(linha.item_id)];
+          return `${item?.nome || "Item"} x${linha.quantidade} (${LABEL_TIPO[linha.tipo]})`;
+        })
+        .join("\n");
+      const confirmou = window.confirm(
+        `Atenção: esta movimentação possui itens que exigem gerar desconto/cobrança:\n\n${itensTexto}\n\nDeseja continuar?`
+      );
+      if (!confirmou) return;
+    }
+
+    const payload = loteMovimentacoes.map((linha) => ({
+      tipo: linha.tipo,
+      item_id: Number(linha.item_id),
+      tecnico_id: linha.tecnico_id ? Number(linha.tecnico_id) : null,
+      cc: linha.cc,
+      quantidade: Number(linha.quantidade),
+      observacao: linha.observacao?.trim() || null,
+    }));
+
+    const { error } = await supabase.from("movimentacoes").insert(payload);
+    if (error) {
+      console.error(error);
+      alert("Erro ao salvar movimentações.");
+      return;
+    }
+
+    await buscarMovimentacoes();
+    setLoteMovimentacoes([]);
+    setMovForm(emptyMovForm());
+    alert("Movimentações salvas com sucesso.");
+  };
+
+  const solicitarTriangulacao = () => {
+    if (!canRequestTriangulacao(usuarioAtual)) {
+      alert("Seu usuário não possui permissão para solicitar triangulação.");
+      return;
+    }
+    if (!triForm.cc_origem || !triForm.cc_destino || !triForm.item_id || !triForm.quantidade) {
+      alert("Preencha origem, destino, item e quantidade.");
+      return;
+    }
+    if (triForm.cc_origem === triForm.cc_destino) {
+      alert("Origem e destino não podem ser iguais.");
+      return;
+    }
+    if (!roleCanManageCC(usuarioAtual, triForm.cc_origem)) {
+      alert("Seu perfil não pode solicitar triangulação a partir desse CC.");
+      return;
+    }
+
+    const quantidade = Number(triForm.quantidade || 0);
+    const itemId = Number(triForm.item_id);
+    const saldoAtual = Number(saldoEstoqueCCItem[`${triForm.cc_origem}-${itemId}`] || 0);
+    if (quantidade <= 0) {
+      alert("Informe uma quantidade válida.");
+      return;
+    }
+    if (quantidade > saldoAtual) {
+      alert(`Saldo insuficiente na origem. Saldo atual: ${saldoAtual}.`);
+      return;
+    }
+
+    const registro = {
+      id: uid(),
+      cc_origem: triForm.cc_origem,
+      cc_destino: triForm.cc_destino,
+      item_id: itemId,
+      quantidade,
+      observacao: triForm.observacao.trim(),
+      solicitado_por: usuarioAtual?.usuario || "-",
+      solicitado_nome: usuarioAtual?.nome || "-",
+      status: "Pendente",
+      created_at: new Date().toISOString(),
+    };
+
+    setTriangulacoes((prev) => [registro, ...prev]);
+    setTriForm(emptyTriForm());
+    alert("Triangulação solicitada com sucesso. Ela precisa ser aprovada antes de entrar no estoque.");
+  };
+
+  const aprovarTriangulacao = async (tri) => {
+    if (!roleCanApproveTriangulacao(usuarioAtual, tri.cc_origem, tri.cc_destino)) {
+      alert("Seu perfil não pode aprovar essa triangulação.");
+      return;
+    }
+
+    const saldoAtual = Number(saldoEstoqueCCItem[`${tri.cc_origem}-${tri.item_id}`] || 0);
+    if (Number(tri.quantidade) > saldoAtual) {
+      alert(`Saldo insuficiente na origem no momento da aprovação. Saldo atual: ${saldoAtual}.`);
+      return;
+    }
+
+    const payload = [
+      {
+        tipo: "triangulacao_saida",
+        item_id: Number(tri.item_id),
+        tecnico_id: null,
+        cc: tri.cc_origem,
+        quantidade: Number(tri.quantidade),
+        observacao: `Triangulação para ${tri.cc_destino}. ${tri.observacao || ""}`.trim(),
+      },
+      {
+        tipo: "triangulacao_entrada",
+        item_id: Number(tri.item_id),
+        tecnico_id: null,
+        cc: tri.cc_destino,
+        quantidade: Number(tri.quantidade),
+        observacao: `Triangulação vinda de ${tri.cc_origem}. ${tri.observacao || ""}`.trim(),
+      },
+    ];
+
+    const { error } = await supabase.from("movimentacoes").insert(payload);
+    if (error) {
+      console.error(error);
+      alert("Erro ao aprovar triangulação.");
+      return;
+    }
+
+    setTriangulacoes((prev) =>
+      prev.map((item) =>
+        item.id === tri.id
+          ? {
+              ...item,
+              status: "Aprovada",
+              aprovado_por: usuarioAtual?.usuario || "-",
+              aprovado_nome: usuarioAtual?.nome || "-",
+              approved_at: new Date().toISOString(),
+            }
+          : item
+      )
+    );
+    await buscarMovimentacoes();
+  };
+
+  const reprovarTriangulacao = (tri) => {
+    if (!roleCanApproveTriangulacao(usuarioAtual, tri.cc_origem, tri.cc_destino)) {
+      alert("Seu perfil não pode reprovar essa triangulação.");
+      return;
+    }
+    setTriangulacoes((prev) =>
+      prev.map((item) =>
+        item.id === tri.id
+          ? {
+              ...item,
+              status: "Reprovada",
+              aprovado_por: usuarioAtual?.usuario || "-",
+              aprovado_nome: usuarioAtual?.nome || "-",
+              approved_at: new Date().toISOString(),
+            }
+          : item
+      )
+    );
+  };
+
+  const cadastrarUsuario = async () => {
+    if (!roleCanManageUsers(usuarioAtual)) {
+      alert("Seu perfil não pode cadastrar usuários.");
+      return;
+    }
+    if (!usuarioForm.nome.trim() || !usuarioForm.usuario.trim() || !usuarioForm.cargo) {
+      alert("Preencha nome, usuário e cargo.");
+      return;
+    }
+    if (usuariosSistema.some((u) => u.usuario === usuarioForm.usuario.trim())) {
+      alert("Já existe um usuário com esse login.");
+      return;
+    }
+
+    if (usuarioForm.senha.trim()) {
+      const erroSenha = validarPoliticaSenha(usuarioForm.senha);
+      if (erroSenha) {
+        alert(`Senha informada inválida: ${erroSenha}`);
+        return;
+      }
+    }
+
+    const senhaInicial = usuarioForm.senha.trim() || DEFAULT_USER_PASSWORD;
+    const usarSenhaPadrao = !usuarioForm.senha.trim();
+
+    const novo = normalizeUser({
+      id: uid(),
+      nome: usuarioForm.nome.trim(),
+      usuario: usuarioForm.usuario.trim(),
+      senha: senhaInicial,
+      cargo: usuarioForm.cargo,
+      ccs:
+        usuarioForm.cargo === "Admin" ||
+        usuarioForm.cargo === "Gerente" ||
+        usuarioForm.cargo === "SUP. Almoxarifado"
+          ? [...CCS]
+          : [...usuarioForm.ccs],
+      permissions: {
+        ...getDefaultPermissions(usuarioForm.cargo),
+        ...(usuarioForm.permissions || {}),
+      },
+      ativo: true,
+      mustChangePassword: usarSenhaPadrao,
+    });
+    const { error } = await supabase.from("usuarios").insert([toDbUserPayload(novo)]);
+    if (error) {
+      alert(getSupabaseErrorMessage(error, "Erro ao cadastrar usuário no banco."));
+      return;
+    }
+    setUsuariosSistema((prev) => [novo, ...prev.map((user) => normalizeUser(user))]);
+    setUsuarioForm({
+      nome: "",
+      usuario: "",
+      senha: "",
+      cargo: "Gerente",
+      ccs: [...CCS],
+      ativo: true,
+      permissions: getDefaultPermissions("Gerente"),
+    });
+    alert(
+      usarSenhaPadrao
+        ? `Usuário criado com senha padrão (${DEFAULT_USER_PASSWORD}). No primeiro acesso será obrigatório trocar a senha.`
+        : "Usuário criado com sucesso."
+    );
+  };
+
+  const alternarUsuarioAtivo = async (id) => {
+    if (!roleCanManageUsers(usuarioAtual)) return;
+    const alvo = usuariosSistema.find((u) => u.id === id);
+    if (!alvo) return;
+    const novoAtivo = alvo.ativo === false;
+    const { error } = await supabase.from("usuarios").update({ ativo: novoAtivo }).eq("id", id);
+    if (error) {
+      alert(getSupabaseErrorMessage(error, "Erro ao atualizar status do usuário."));
+      return;
+    }
+    setUsuariosSistema((prev) =>
+      prev.map((u) => (u.id === id ? { ...normalizeUser(u), ativo: !u.ativo } : normalizeUser(u)))
+    );
+  };
+
+  const excluirUsuario = async (id) => {
+    if (!roleCanManageUsers(usuarioAtual)) return;
+    const alvo = usuariosSistema.find((u) => u.id === id);
+    if (!alvo) return;
+
+    if (String(usuarioAtual?.id) === String(id)) {
+      alert("Você não pode excluir o usuário que está logado.");
+      return;
+    }
+
+    if (alvo.cargo === "Admin") {
+      const totalAdmins = usuariosSistema.filter((u) => u.cargo === "Admin" && u.ativo !== false).length;
+      if (totalAdmins <= 1) {
+        alert("Não é possível excluir o último Admin ativo do sistema.");
+        return;
+      }
+    }
+
+    const confirmou = window.confirm(`Deseja realmente excluir o usuário "${alvo.nome}"?`);
+    if (!confirmou) return;
+
+    const { error } = await supabase.from("usuarios").delete().eq("id", id);
+    if (error) {
+      alert(getSupabaseErrorMessage(error, "Erro ao excluir usuário no banco."));
+      return;
+    }
+    setUsuariosSistema((prev) => prev.filter((u) => u.id !== id).map((user) => normalizeUser(user)));
+    setUsuarioExpandidoId((prev) => (prev === id ? null : prev));
+  };
+
+  const resetarSenhaUsuario = async (id) => {
+    if (!roleCanManageUsers(usuarioAtual)) return;
+    const alvo = usuariosSistema.find((u) => u.id === id);
+    if (!alvo) return;
+    const confirmou = window.confirm(
+      `Deseja resetar a senha do usuário "${alvo.nome}" para a senha padrão (${DEFAULT_USER_PASSWORD})?`
+    );
+    if (!confirmou) return;
+
+    const { error } = await supabase
+      .from("usuarios")
+      .update({
+        senha: DEFAULT_USER_PASSWORD,
+        must_change_password: true,
+      })
+      .eq("id", id);
+    if (error) {
+      alert(getSupabaseErrorMessage(error, "Erro ao resetar senha no banco."));
+      return;
+    }
+
+    setUsuariosSistema((prev) =>
+      prev.map((u) =>
+        u.id === id
+          ? normalizeUser({ ...u, senha: DEFAULT_USER_PASSWORD, mustChangePassword: true })
+          : normalizeUser(u)
+      )
+    );
+
+    if (String(usuarioAtual?.id) === String(id)) {
+      const usuarioAtualizado = normalizeUser({
+        ...usuarioAtual,
+        senha: DEFAULT_USER_PASSWORD,
+        mustChangePassword: true,
+      });
+      setUsuarioAtual(usuarioAtualizado);
+      safeLocalStorageSet(STORAGE_KEY_AUTH, usuarioAtualizado);
+    }
+
+    alert("Senha resetada. No próximo acesso será obrigatório definir uma senha pessoal.");
+  };
+
+  const atualizarUsuarioCC = async (id, cc, checked) => {
+    if (!roleCanManageUsers(usuarioAtual)) return;
+    const alvo = usuariosSistema.find((user) => user.id === id);
+    if (!alvo) return;
+    const normalizado = normalizeUser(alvo);
+    const ccsAtualizados = ["Admin", "Gerente", "SUP. Almoxarifado"].includes(normalizado.cargo)
+      ? [...CCS]
+      : checked
+        ? Array.from(new Set([...(normalizado.ccs || []), cc]))
+        : (normalizado.ccs || []).filter((item) => item !== cc);
+    const { error } = await supabase.from("usuarios").update({ ccs: ccsAtualizados }).eq("id", id);
+    if (error) {
+      alert(getSupabaseErrorMessage(error, "Erro ao atualizar CCs do usuário."));
+      return;
+    }
+    setUsuariosSistema((prev) =>
+      prev.map((user) => {
+        if (user.id !== id) return normalizeUser(user);
+        const normalizado = normalizeUser(user);
+        if (["Admin", "Gerente", "SUP. Almoxarifado"].includes(normalizado.cargo)) {
+          return { ...normalizado, ccs: [...CCS] };
+        }
+        return {
+          ...normalizado,
+          ccs: checked
+            ? Array.from(new Set([...(normalizado.ccs || []), cc]))
+            : (normalizado.ccs || []).filter((item) => item !== cc),
+        };
+      })
+    );
+  };
+
+  const atualizarUsuarioPermissao = async (id, key, checked) => {
+    if (!roleCanManageUsers(usuarioAtual)) return;
+    const alvo = usuariosSistema.find((user) => user.id === id);
+    if (!alvo) return;
+    const permissoesAtualizadas = {
+      ...normalizeUser(alvo).permissions,
+      [key]: checked,
+    };
+    const { error } = await supabase
+      .from("usuarios")
+      .update({ permissions: permissoesAtualizadas })
+      .eq("id", id);
+    if (error) {
+      alert(getSupabaseErrorMessage(error, "Erro ao atualizar permissões do usuário."));
+      return;
+    }
+    setUsuariosSistema((prev) =>
+      prev.map((user) =>
+        user.id === id
+          ? {
+              ...normalizeUser(user),
+              permissions: {
+                ...normalizeUser(user).permissions,
+                [key]: checked,
+              },
+            }
+          : normalizeUser(user)
+      )
+    );
+  };
+
+  const usuariosVisiveis = useMemo(() => usuariosSistema.map((user) => normalizeUser(user)), [usuariosSistema]);
+
+  const tecnicosVisiveis = useMemo(
+    () => tecnicos.filter((tec) => roleCanViewCC(usuarioAtual, tec.cc)),
+    [tecnicos, usuarioAtual]
+  );
+
+  const itensCriticosVisiveis = indicadoresDashboard.itensCriticos;
+
+  const estoqueConsolidadoFiltrado = useMemo(() => {
+    const comTecnicoPorChave = {};
+
+    estoquePorTecnico
+      .filter((registro) => {
+        if (estoqueFiltro.cc && registro.cc !== estoqueFiltro.cc) return false;
+        if (estoqueFiltro.tecnico_id && Number(registro.tecnico_id) !== Number(estoqueFiltro.tecnico_id)) return false;
+        if (estoqueFiltro.item_id && Number(registro.item_id) !== Number(estoqueFiltro.item_id)) return false;
+        return true;
+      })
+      .forEach((registro) => {
+        const chave = `${registro.cc}-${registro.item_id}`;
+        comTecnicoPorChave[chave] = Number(comTecnicoPorChave[chave] || 0) + Number(registro.quantidade || 0);
+      });
+
+    const baseFiltrada = estoqueGeral.filter((registro) => {
+      if (!roleCanViewCC(usuarioAtual, registro.cc)) return false;
+      if (estoqueFiltro.cc && registro.cc !== estoqueFiltro.cc) return false;
+      if (estoqueFiltro.item_id && Number(registro.itemId) !== Number(estoqueFiltro.item_id)) return false;
+      return true;
+    });
+
+    const registrosPorCcItem = baseFiltrada
+      .map((registro) => {
+        const chave = `${registro.cc}-${registro.itemId}`;
+        const comTecnico = estoqueFiltro.tecnico_id
+          ? Number(comTecnicoPorChave[chave] || 0)
+          : Number(registro.comTecnico || 0);
+        return {
+          ...registro,
+          comTecnico,
+          total: Number(registro.estoque || 0) + comTecnico,
+        };
+      })
+      .filter((registro) => !estoqueFiltro.tecnico_id || registro.comTecnico > 0);
+
+    const consolidadoPorItem = {};
+    registrosPorCcItem.forEach((registro) => {
+      const chaveItem = Number(registro.itemId);
+      if (!consolidadoPorItem[chaveItem]) {
+        consolidadoPorItem[chaveItem] = {
+          itemId: chaveItem,
+          itemNome: registro.itemNome,
+          estoque: 0,
+          comTecnico: 0,
+          total: 0,
+          minimo: 0,
+        };
+      }
+      consolidadoPorItem[chaveItem].estoque += Number(registro.estoque || 0);
+      consolidadoPorItem[chaveItem].comTecnico += Number(registro.comTecnico || 0);
+      consolidadoPorItem[chaveItem].total += Number(registro.total || 0);
+      consolidadoPorItem[chaveItem].minimo += Number(registro.minimo || 0);
+    });
+
+    return Object.values(consolidadoPorItem).sort((a, b) =>
+      a.itemNome.localeCompare(b.itemNome, "pt-BR")
+    );
+  }, [estoqueGeral, estoquePorTecnico, estoqueFiltro, usuarioAtual]);
+
+  if (!usuarioAtual) {
     return (
       <div style={styles.loginBg}>
-        <div style={styles.loginCard}>
-          <h1 style={styles.loginTitle}>Login do Sistema</h1>
-
+        <form
+          style={styles.loginCard}
+          onSubmit={(e) => {
+            e.preventDefault();
+            login();
+          }}
+        >
+          <div style={styles.brandRow}>
+            <img
+              src={BRAND_LOGO_SRC}
+              alt="Logo EQS Engenharia"
+              style={styles.brandLogo}
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+              }}
+            />
+            <div>
+              <div style={styles.loginBadge}>Controle de estoque</div>
+              <h1 style={styles.loginTitle}>Ferramentaria NET PR</h1>
+            </div>
+          </div>
+          <p style={styles.loginText}>Entre com seu usuário para acessar o painel.</p>
+          {erroUsuarios && <p style={styles.warningText}>{erroUsuarios}</p>}
+          {carregandoUsuarios && <p style={styles.mutedText}>Carregando usuários...</p>}
           <label style={styles.label}>Usuário</label>
           <input
             style={styles.input}
+            value={usuarioLogin}
+            onChange={(e) => setUsuarioLogin(e.target.value)}
             placeholder="Digite seu usuário"
-            value={usuario}
-            onChange={(e) => setUsuario(e.target.value)}
           />
-
           <label style={styles.label}>Senha</label>
           <input
             style={styles.input}
             type="password"
+            value={senhaLogin}
+            onChange={(e) => setSenhaLogin(e.target.value)}
             placeholder="Digite sua senha"
-            value={senha}
-            onChange={(e) => setSenha(e.target.value)}
           />
+          <button type="submit" style={styles.primaryButton}>Entrar</button>
+          <p style={styles.loginHint}>Agora também dá para entrar apertando Enter.</p>
+        </form>
+      </div>
+    );
+  }
 
-          <button style={styles.primaryButton} onClick={login}>
-            Entrar
-          </button>
-
-          <p style={styles.loginHint}>Login inicial: admin / admin123</p>
-        </div>
+  if (usuarioAtual?.mustChangePassword) {
+    return (
+      <div style={styles.loginBg}>
+        <form
+          style={styles.loginCard}
+          onSubmit={(e) => {
+            e.preventDefault();
+            alterarSenhaObrigatoria();
+          }}
+        >
+          <div style={styles.brandRow}>
+            <img
+              src={BRAND_LOGO_SRC}
+              alt="Logo EQS Engenharia"
+              style={styles.brandLogo}
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+              }}
+            />
+            <div>
+              <div style={styles.loginBadge}>Primeiro acesso</div>
+              <h1 style={styles.loginTitle}>Defina sua senha pessoal</h1>
+            </div>
+          </div>
+          <p style={styles.loginText}>
+            Por segurança, você precisa alterar a senha padrão antes de acessar os módulos.
+          </p>
+          <label style={styles.label}>Nova senha</label>
+          <input
+            style={styles.input}
+            type="password"
+            value={novaSenhaObrigatoria}
+            onChange={(e) => setNovaSenhaObrigatoria(e.target.value)}
+            placeholder="Digite sua nova senha"
+          />
+          <label style={styles.label}>Confirmar nova senha</label>
+          <input
+            style={styles.input}
+            type="password"
+            value={confirmarSenhaObrigatoria}
+            onChange={(e) => setConfirmarSenhaObrigatoria(e.target.value)}
+            placeholder="Repita sua nova senha"
+          />
+          <button type="submit" style={styles.primaryButton}>Salvar nova senha</button>
+        </form>
       </div>
     );
   }
@@ -318,19 +1704,32 @@ export default function App() {
   return (
     <div style={styles.appShell}>
       <aside style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>Ferramentaria NET PR</div>
-
+        <div style={styles.sidebarHeader}>
+          <img
+            src={BRAND_LOGO_SRC}
+            alt="Logo EQS Engenharia"
+            style={styles.sidebarLogo}
+            onError={(e) => {
+              e.currentTarget.style.display = "none";
+            }}
+          />
+          <div>Ferramentaria NET PR</div>
+        </div>
+        <div style={styles.userBox}>
+          <div style={styles.userBoxName}>{usuarioAtual.nome}</div>
+          <div style={styles.userBoxRole}>{usuarioAtual.cargo}</div>
+        </div>
         <nav style={styles.menu}>
-          {MENU.map((item) => (
+          {MENU.filter((item) => item.key !== "usuarios" || roleCanManageUsers(usuarioAtual)).map((item) => (
             <button
               key={item.key}
               onClick={() => setPagina(item.key)}
-              style={{
-                ...styles.menuButton,
-                ...(pagina === item.key ? styles.menuButtonActive : {}),
-              }}
+              style={{ ...styles.menuButton, ...(pagina === item.key ? styles.menuButtonActive : {}) }}
             >
-              {item.label}
+              <span style={styles.menuButtonContent}>
+                <MenuIcon iconKey={item.iconKey} />
+                <span>{item.label}</span>
+              </span>
             </button>
           ))}
         </nav>
@@ -339,137 +1738,133 @@ export default function App() {
       <main style={styles.main}>
         <header style={styles.topbar}>
           <div>
-            <h2 style={styles.pageTitle}>
-              {MENU.find((m) => m.key === pagina)?.label || "Sistema"}
-            </h2>
-            <div style={styles.topbarSub}>Administrador</div>
+            <h2 style={styles.pageTitle}>{MENU.find((m) => m.key === pagina)?.label || "Sistema"}</h2>
+            <div style={styles.topbarSub}>{usuarioAtual.cargo}</div>
           </div>
-
-          <button style={styles.logoutButton} onClick={sair}>
-            Sair
-          </button>
+          <button style={styles.logoutButton} onClick={sair}>Sair</button>
         </header>
 
-        {pagina === "dashboard" && (
+        {carregando && <div style={styles.section}>Carregando dados principais...</div>}
+        {!carregando && carregandoMovimentacoes && (
+          <div style={styles.sectionMini}>Carregando histórico e cálculos de movimentações em segundo plano...</div>
+        )}
+
+        {!carregando && pagina === "dashboard" && (
           <>
             <div style={styles.cardsGrid}>
-              <MetricCard titulo="Itens cadastrados" valor={totalItens} />
-              <MetricCard titulo="Técnicos cadastrados" valor={totalTecnicos} />
-              <MetricCard titulo="Kits completos hoje" valor={kitsHoje} />
+              <MetricCard titulo="Kits disponíveis para entrega" valor={indicadoresDashboard.totalKitsDisponiveis} iconKey="kits" />
+              <MetricCard titulo="Técnicos cadastrados" valor={indicadoresDashboard.totalTecnicos} iconKey="tecnicos" />
+              <MetricCard titulo="Itens no estoque" valor={indicadoresDashboard.totalNoEstoque} iconKey="estoque" />
+              <MetricCard titulo="Itens com técnicos" valor={indicadoresDashboard.totalComTecnicos} iconKey="campo" />
+              <MetricCard titulo="Itens críticos abaixo do mínimo" valor={itensCriticosVisiveis.length} destaque iconKey="critico" />
+              <MetricCard
+                titulo="Valor total com técnicos"
+                valor={canViewDashboardValues(usuarioAtual) ? formatMoney(indicadoresDashboard.valorTotalComTecnicos) : "Sem permissão"}
+              />
+              <MetricCard
+                titulo="Valor total no estoque"
+                valor={canViewDashboardValues(usuarioAtual) ? formatMoney(indicadoresDashboard.valorTotalNoEstoque) : "Sem permissão"}
+              />
+              <MetricCard
+                titulo="Item mais substituído"
+                valor={indicadoresDashboard.itemMaisSubstituido ? `${indicadoresDashboard.itemMaisSubstituido.itemNome} (${indicadoresDashboard.itemMaisSubstituido.total})` : "Sem dados"}
+              />
+            </div>
+            {!canViewDashboardValues(usuarioAtual) && (
+              <p style={{ ...styles.mutedText, marginTop: 10 }}>
+                Seu usuário não possui permissão para visualizar valores financeiros no dashboard.
+              </p>
+            )}
+
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Itens críticos abaixo do mínimo</h3>
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>CC</th>
+                      <th style={styles.th}>Item</th>
+                      <th style={styles.th}>Saldo</th>
+                      <th style={styles.th}>Mínimo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itensCriticosVisiveis.length === 0 ? (
+                      <tr><td style={styles.td} colSpan={4}>Nenhum item crítico no momento.</td></tr>
+                    ) : (
+                      itensCriticosVisiveis.map((registro, index) => (
+                        <tr key={`${registro.cc}-${registro.item_id}-${index}`}>
+                          <td style={styles.td}>{registro.cc}</td>
+                          <td style={styles.td}>{registro.itemNome}</td>
+                          <td style={{ ...styles.td, color: "#dc2626", fontWeight: 700 }}>{registro.estoque}</td>
+                          <td style={styles.td}>{registro.minimo}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             <div style={styles.section}>
-              <h3 style={styles.sectionTitle}>Visão geral</h3>
-              <p style={styles.mutedText}>
-                Base do sistema pronta. Agora os itens já podem ter estoque
-                mínimo separado por centro de custo e ficam salvos no navegador.
-              </p>
+              <h3 style={styles.sectionTitle}>Item mais substituído por perda, quebra e desgaste</h3>
+              {!indicadoresDashboard.itemMaisSubstituido ? (
+                <p style={styles.mutedText}>Ainda não existem substituições lançadas.</p>
+              ) : (
+                <div style={styles.summaryGrid}>
+                  <SummaryBox titulo="Item" valor={indicadoresDashboard.itemMaisSubstituido.itemNome} />
+                  <SummaryBox titulo="Total" valor={indicadoresDashboard.itemMaisSubstituido.total} />
+                  <SummaryBox titulo="Perda" valor={indicadoresDashboard.itemMaisSubstituido.perda} />
+                  <SummaryBox titulo="Quebra" valor={indicadoresDashboard.itemMaisSubstituido.quebra} />
+                  <SummaryBox titulo="Desgaste" valor={indicadoresDashboard.itemMaisSubstituido.desgaste} />
+                </div>
+              )}
             </div>
           </>
         )}
 
-        {pagina === "itens" && (
+        {!carregando && pagina === "itens" && (
           <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>Cadastro de itens</h3>
-
-            <div style={styles.formGrid}>
-              <input
-                style={styles.input}
-                placeholder="Código do item"
-                value={itemForm.codigo}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, codigo: e.target.value })
-                }
-              />
-
-              <input
-                style={styles.input}
-                placeholder="Nome do item"
-                value={itemForm.nome}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, nome: e.target.value })
-                }
-              />
-
-              <input
-                style={styles.input}
-                type="number"
-                placeholder="Valor unitário"
-                value={itemForm.valor}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, valor: e.target.value })
-                }
-              />
-
-              <input
-                style={styles.input}
-                type="number"
-                placeholder="Qtd por kit"
-                value={itemForm.qtdKit}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, qtdKit: e.target.value })
-                }
-              />
-            </div>
-
-            <div style={styles.sectionMini}>
-              <h4 style={styles.sectionMiniTitle}>Estoque mínimo por CC</h4>
-              <div style={styles.formGrid}>
-                {CCS.map((cc) => (
-                  <input
-                    key={cc}
-                    style={styles.input}
-                    type="number"
-                    placeholder={`${cc} - mínimo`}
-                    value={itemForm.minimos[cc]}
-                    onChange={(e) => atualizarMinimo(cc, e.target.value)}
-                  />
-                ))}
+            <div style={styles.sectionHeaderLine}>
+              <h3 style={styles.sectionTitle}>Cadastro de itens</h3>
+              <div style={styles.actionRow}>
+                <button style={styles.secondaryButtonInline} onClick={baixarModeloItensExcel}>Baixar modelo</button>
+                <button style={styles.secondaryButtonInline} onClick={exportarItensExcel}>Exportar Excel</button>
+                <label style={styles.fileButton}>
+                  Importar Excel
+                  <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={importarItensExcel} />
+                </label>
               </div>
             </div>
 
-            <div style={styles.actionRow}>
-              <button style={styles.primaryButtonInline} onClick={cadastrarItem}>
-                Cadastrar item
-              </button>
-
-              <button style={styles.primaryButtonInline} onClick={exportarCSV}>
-                Exportar CSV
-              </button>
-
-              <button
-                style={styles.primaryButtonInline}
-                onClick={baixarModeloCSV}
-              >
-                Baixar modelo CSV
-              </button>
-
-              <label style={styles.primaryButtonInline}>
-                Importar CSV
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={importarCSV}
-                  style={{ display: "none" }}
-                />
-              </label>
-
-              <button
-                style={styles.secondaryButtonInline}
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      "Deseja apagar todos os itens salvos no navegador?"
-                    )
-                  ) {
-                    setItens([]);
-                    localStorage.removeItem(STORAGE_KEY_ITEMS);
-                  }
-                }}
-              >
-                Limpar itens salvos
-              </button>
-            </div>
+            {roleCanManageItems(usuarioAtual) ? (
+              <>
+                <div style={styles.formGrid}>
+                  <input style={styles.input} placeholder="Código do item" value={itemForm.codigo} onChange={(e) => setItemForm({ ...itemForm, codigo: e.target.value })} />
+                  <input style={styles.input} placeholder="Nome do item" value={itemForm.nome} onChange={(e) => setItemForm({ ...itemForm, nome: e.target.value })} />
+                  <input style={styles.input} type="number" placeholder="Valor unitário" value={itemForm.valor} onChange={(e) => setItemForm({ ...itemForm, valor: e.target.value })} />
+                  <input style={styles.input} type="number" placeholder="Qtd por kit" value={itemForm.qtdKit} onChange={(e) => setItemForm({ ...itemForm, qtdKit: e.target.value })} />
+                </div>
+                <div style={styles.sectionMini}>
+                  <h4 style={styles.sectionMiniTitle}>Estoque mínimo por CC</h4>
+                  <div style={styles.formGrid}>
+                    {CCS.map((cc) => (
+                      <input
+                        key={cc}
+                        style={styles.input}
+                        type="number"
+                        placeholder={`${cc} - mínimo`}
+                        value={itemForm.minimos[cc]}
+                        onChange={(e) => setItemForm((prev) => ({ ...prev, minimos: { ...prev.minimos, [cc]: e.target.value } }))}
+                      />
+                    ))}
+                  </div>
+                </div>
+                <button style={styles.primaryButtonInline} onClick={cadastrarItem}>Cadastrar item</button>
+              </>
+            ) : (
+              <p style={styles.mutedText}>Seu perfil pode consultar e exportar, mas não cadastrar itens.</p>
+            )}
 
             <div style={styles.tableWrap}>
               <table style={styles.table}>
@@ -485,36 +1880,27 @@ export default function App() {
                 </thead>
                 <tbody>
                   {itens.length === 0 ? (
-                    <tr>
-                      <td style={styles.td} colSpan={6}>
-                        Nenhum item cadastrado.
-                      </td>
-                    </tr>
+                    <tr><td style={styles.td} colSpan={6}>Nenhum item cadastrado.</td></tr>
                   ) : (
                     itens.map((item) => (
                       <tr key={item.id}>
                         <td style={styles.td}>{item.codigo}</td>
                         <td style={styles.td}>{item.nome}</td>
-                        <td style={styles.td}>
-                          R$ {Number(item.valor || 0).toFixed(2)}
-                        </td>
-                        <td style={styles.td}>{Number(item.qtdKit || 0)}</td>
+                        <td style={styles.td}>{formatMoney(item.valor)}</td>
+                        <td style={styles.td}>{item.qtdKit}</td>
                         <td style={styles.td}>
                           <div style={styles.minimosLista}>
                             {CCS.map((cc) => (
-                              <div key={cc} style={styles.minimoLinha}>
-                                <strong>{cc}:</strong> {item.minimos?.[cc] ?? 0}
-                              </div>
+                              <div key={cc} style={styles.minimoLinha}><strong>{cc}:</strong> {Number(item.minimos?.[cc] || 0)}</div>
                             ))}
                           </div>
                         </td>
                         <td style={styles.td}>
-                          <button
-                            style={styles.deleteButton}
-                            onClick={() => excluirItem(item.id)}
-                          >
-                            Excluir
-                          </button>
+                          {roleCanManageItems(usuarioAtual) ? (
+                            <button style={styles.deleteButton} onClick={() => excluirItem(item.id)}>Excluir</button>
+                          ) : (
+                            "-"
+                          )}
                         </td>
                       </tr>
                     ))
@@ -525,60 +1911,725 @@ export default function App() {
           </div>
         )}
 
-        {pagina === "tecnicos" && (
-          <Placeholder
-            titulo="Técnicos"
-            texto="Aqui vamos cadastrar os técnicos por centro de custo."
-          />
+        {!carregando && pagina === "tecnicos" && (
+          <div style={styles.section}>
+            <div style={styles.sectionHeaderLine}>
+              <h3 style={styles.sectionTitle}>Cadastro de técnicos</h3>
+              <div style={styles.actionRow}>
+                <button style={styles.secondaryButtonInline} onClick={baixarModeloTecnicosExcel}>Baixar modelo</button>
+                <button style={styles.secondaryButtonInline} onClick={exportarTecnicosExcel}>Exportar Excel</button>
+                <label style={styles.fileButton}>
+                  Importar Excel
+                  <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={importarTecnicosExcel} />
+                </label>
+              </div>
+            </div>
+
+            {usuarioAtual.cargo !== "Sup. Técnico" ? (
+              <>
+                <div style={styles.formGrid}>
+                  <input style={styles.input} placeholder="Nome do técnico" value={tecnicoForm.nome} onChange={(e) => setTecnicoForm({ ...tecnicoForm, nome: e.target.value })} />
+                  <select style={styles.input} value={tecnicoForm.cc} onChange={(e) => setTecnicoForm({ ...tecnicoForm, cc: e.target.value })}>
+                    <option value="">Selecione o centro de custo</option>
+                    {CCS.filter((cc) => roleCanManageCC(usuarioAtual, cc) || roleCanViewCC(usuarioAtual, cc)).map((cc) => (
+                      <option key={cc} value={cc}>{cc}</option>
+                    ))}
+                  </select>
+                </div>
+                <button style={styles.primaryButtonInline} onClick={cadastrarTecnico}>Cadastrar técnico</button>
+              </>
+            ) : (
+              <p style={styles.mutedText}>Seu perfil pode apenas consultar técnicos do próprio CC.</p>
+            )}
+
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Nome</th>
+                    <th style={styles.th}>Centro de custo</th>
+                    <th style={styles.th}>Ação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tecnicosVisiveis.length === 0 ? (
+                    <tr><td style={styles.td} colSpan={3}>Nenhum técnico cadastrado.</td></tr>
+                  ) : (
+                    tecnicosVisiveis.map((tec) => (
+                      <tr key={tec.id}>
+                        <td style={styles.td}>{tec.nome}</td>
+                        <td style={styles.td}>{tec.cc}</td>
+                        <td style={styles.td}>
+                          {roleCanCreateCadastrosTecnicos(usuarioAtual, tec.cc) ? (
+                            <button style={styles.deleteButton} onClick={() => excluirTecnico(tec.id)}>Excluir</button>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
 
-        {pagina === "movimentacoes" && (
-          <Placeholder
-            titulo="Movimentações"
-            texto="Aqui vamos registrar entradas, saídas, reposições e histórico."
-          />
+        {!carregando && pagina === "movimentacoes" && (
+          <>
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Lançar movimentações</h3>
+              <div style={styles.formGrid}>
+                <select style={styles.input} value={movForm.tipo} onChange={(e) => setMovForm({ ...movForm, tipo: e.target.value, tecnico_id: "" })}>
+                  {TIPOS_MOV.map((tipo) => <option key={tipo.value} value={tipo.value}>{tipo.label}</option>)}
+                </select>
+                <select style={styles.input} value={movForm.cc} onChange={(e) => setMovForm({ ...movForm, cc: e.target.value, tecnico_id: "" })}>
+                  <option value="">Selecione o CC</option>
+                  {CCS.filter((cc) => roleCanManageCC(usuarioAtual, cc)).map((cc) => <option key={cc} value={cc}>{cc}</option>)}
+                </select>
+                <select style={styles.input} value={movForm.item_id} onChange={(e) => setMovForm({ ...movForm, item_id: e.target.value })}>
+                  <option value="">Selecione o item</option>
+                  {itens.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+                </select>
+                {["saida_tecnico", "devolucao_tecnico", "substituicao_perda", "substituicao_quebra", "substituicao_desgaste"].includes(movForm.tipo) ? (
+                  <select style={styles.input} value={movForm.tecnico_id} onChange={(e) => setMovForm({ ...movForm, tecnico_id: e.target.value })}>
+                    <option value="">Selecione o técnico</option>
+                    {tecnicosVisiveis.filter((tec) => !movForm.cc || tec.cc === movForm.cc).map((tec) => <option key={tec.id} value={tec.id}>{tec.nome}</option>)}
+                  </select>
+                ) : (
+                  <input style={styles.input} disabled placeholder="Técnico não obrigatório para este tipo" />
+                )}
+                <input style={styles.input} type="number" placeholder="Quantidade" value={movForm.quantidade} onChange={(e) => setMovForm({ ...movForm, quantidade: e.target.value })} />
+                <input style={styles.input} placeholder="Observação" value={movForm.observacao} onChange={(e) => setMovForm({ ...movForm, observacao: e.target.value })} />
+              </div>
+              {["substituicao_perda", "substituicao_quebra"].includes(movForm.tipo) && (
+                <div style={styles.warningBox}>Atenção: este tipo de substituição exige gerar desconto/cobrança. O aviso final aparecerá quando o lote for salvo.</div>
+              )}
+              <div style={styles.actionRow}>
+                <button style={styles.primaryButtonInline} onClick={adicionarAoLote}>Adicionar ao lote</button>
+                <button style={styles.secondaryButtonInline} onClick={salvarLoteMovimentacoes}>Salvar lote</button>
+              </div>
+
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Tipo</th>
+                      <th style={styles.th}>CC</th>
+                      <th style={styles.th}>Item</th>
+                      <th style={styles.th}>Técnico</th>
+                      <th style={styles.th}>Qtd</th>
+                      <th style={styles.th}>Observação</th>
+                      <th style={styles.th}>Ação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loteMovimentacoes.length === 0 ? (
+                      <tr><td style={styles.td} colSpan={7}>Nenhuma linha adicionada ao lote.</td></tr>
+                    ) : (
+                      loteMovimentacoes.map((linha) => {
+                        const item = itensById[Number(linha.item_id)];
+                        const tecnico = tecnicosById[Number(linha.tecnico_id)];
+                        return (
+                          <tr key={linha.localId}>
+                            <td style={styles.td}>{LABEL_TIPO[linha.tipo] || linha.tipo}</td>
+                            <td style={styles.td}>{linha.cc}</td>
+                            <td style={styles.td}>{item?.nome || "-"}</td>
+                            <td style={styles.td}>{tecnico?.nome || "-"}</td>
+                            <td style={styles.td}>{linha.quantidade}</td>
+                            <td style={styles.td}>{linha.observacao || "-"}</td>
+                            <td style={styles.td}><button style={styles.deleteButton} onClick={() => removerDoLote(linha.localId)}>Remover</button></td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Triangulação entre centros de custo</h3>
+              {!canUseTriangulacao(usuarioAtual) ? (
+                <p style={styles.mutedText}>Seu usuário não possui permissão para usar triangulação.</p>
+              ) : (
+                <>
+                  <div style={styles.formGrid}>
+                    <select style={styles.input} value={triForm.cc_origem} onChange={(e) => setTriForm({ ...triForm, cc_origem: e.target.value })}>
+                      <option value="">CC de origem</option>
+                      {CCS.filter((cc) => roleCanManageCC(usuarioAtual, cc)).map((cc) => <option key={cc} value={cc}>{cc}</option>)}
+                    </select>
+                    <select style={styles.input} value={triForm.cc_destino} onChange={(e) => setTriForm({ ...triForm, cc_destino: e.target.value })}>
+                      <option value="">CC de destino</option>
+                      {CCS.filter((cc) => roleCanViewCC(usuarioAtual, cc)).map((cc) => <option key={cc} value={cc}>{cc}</option>)}
+                    </select>
+                    <select style={styles.input} value={triForm.item_id} onChange={(e) => setTriForm({ ...triForm, item_id: e.target.value })}>
+                      <option value="">Selecione o item</option>
+                      {itens.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+                    </select>
+                    <input style={styles.input} type="number" placeholder="Quantidade" value={triForm.quantidade} onChange={(e) => setTriForm({ ...triForm, quantidade: e.target.value })} />
+                    <input style={{ ...styles.input, gridColumn: "1 / -1" }} placeholder="Observação" value={triForm.observacao} onChange={(e) => setTriForm({ ...triForm, observacao: e.target.value })} />
+                  </div>
+                  <button
+                    style={{
+                      ...styles.primaryButtonInline,
+                      ...(!canRequestTriangulacao(usuarioAtual) ? styles.disabledButton : {}),
+                    }}
+                    onClick={solicitarTriangulacao}
+                    disabled={!canRequestTriangulacao(usuarioAtual)}
+                  >
+                    Solicitar triangulação
+                  </button>
+                  {!canRequestTriangulacao(usuarioAtual) && (
+                    <p style={styles.permissionHint}>Você pode visualizar triangulações, mas não pode solicitar.</p>
+                  )}
+
+                  <div style={styles.tableWrap}>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>Data</th>
+                          <th style={styles.th}>Origem</th>
+                          <th style={styles.th}>Destino</th>
+                          <th style={styles.th}>Item</th>
+                          <th style={styles.th}>Qtd</th>
+                          <th style={styles.th}>Solicitado por</th>
+                          <th style={styles.th}>Status</th>
+                          <th style={styles.th}>Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {triangulacoes.length === 0 ? (
+                          <tr><td style={styles.td} colSpan={8}>Nenhuma triangulação solicitada.</td></tr>
+                        ) : (
+                          triangulacoes.map((tri) => {
+                            const item = itensById[Number(tri.item_id)];
+                            const podeAprovar = tri.status === "Pendente" && roleCanApproveTriangulacao(usuarioAtual, tri.cc_origem, tri.cc_destino);
+                            return (
+                              <tr key={tri.id}>
+                                <td style={styles.td}>{new Date(tri.created_at).toLocaleString("pt-BR")}</td>
+                                <td style={styles.td}>{tri.cc_origem}</td>
+                                <td style={styles.td}>{tri.cc_destino}</td>
+                                <td style={styles.td}>{item?.nome || `Item #${tri.item_id}`}</td>
+                                <td style={styles.td}>{tri.quantidade}</td>
+                                <td style={styles.td}>{tri.solicitado_nome}</td>
+                                <td style={styles.td}>{tri.status}</td>
+                                <td style={styles.td}>
+                                  {podeAprovar ? (
+                                    <div style={styles.actionRow}>
+                                      <button style={styles.approveButton} onClick={() => aprovarTriangulacao(tri)}>Aprovar</button>
+                                      <button style={styles.deleteButton} onClick={() => reprovarTriangulacao(tri)}>Reprovar</button>
+                                    </div>
+                                  ) : (
+                                    "-"
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Histórico de movimentações</h3>
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Data</th>
+                      <th style={styles.th}>Tipo</th>
+                      <th style={styles.th}>CC</th>
+                      <th style={styles.th}>Item</th>
+                      <th style={styles.th}>Técnico</th>
+                      <th style={styles.th}>Qtd</th>
+                      <th style={styles.th}>Observação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {movimentacoes.filter((mov) => roleCanViewCC(usuarioAtual, mov.cc)).length === 0 ? (
+                      <tr><td style={styles.td} colSpan={7}>Nenhuma movimentação cadastrada.</td></tr>
+                    ) : (
+                      movimentacoes
+                        .filter((mov) => roleCanViewCC(usuarioAtual, mov.cc))
+                        .map((mov) => {
+                          const item = itensById[Number(mov.item_id)];
+                          const tecnico = tecnicosById[Number(mov.tecnico_id)];
+                          return (
+                            <tr key={mov.id}>
+                              <td style={styles.td}>{mov.created_at ? new Date(mov.created_at).toLocaleString("pt-BR") : "-"}</td>
+                              <td style={styles.td}>{LABEL_TIPO[mov.tipo] || mov.tipo}</td>
+                              <td style={styles.td}>{mov.cc}</td>
+                              <td style={styles.td}>{item?.nome || `Item #${mov.item_id}`}</td>
+                              <td style={styles.td}>{tecnico?.nome || "-"}</td>
+                              <td style={styles.td}>{mov.quantidade}</td>
+                              <td style={styles.td}>{mov.observacao || "-"}</td>
+                            </tr>
+                          );
+                        })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
         )}
 
-        {pagina === "estoque" && (
-          <Placeholder
-            titulo="Estoque"
-            texto="Aqui vamos mostrar saldo atual, kits possíveis e estoque por CC."
-          />
+        {!carregando && pagina === "estoque" && (
+          <div style={styles.section}>
+            <h3 style={styles.sectionTitle}>Visão consolidada de estoque</h3>
+            <p style={styles.mutedText}>
+              Visualize em uma única tabela os totais por item e CC. Use os filtros para refinar por centro de custo, técnico e item.
+            </p>
+            <div style={styles.formGrid}>
+              <select style={styles.input} value={estoqueFiltro.cc} onChange={(e) => setEstoqueFiltro({ ...estoqueFiltro, cc: e.target.value, tecnico_id: "" })}>
+                <option value="">Filtrar por CC</option>
+                {CCS.filter((cc) => roleCanViewCC(usuarioAtual, cc)).map((cc) => <option key={cc} value={cc}>{cc}</option>)}
+              </select>
+              <select style={styles.input} value={estoqueFiltro.tecnico_id} onChange={(e) => setEstoqueFiltro({ ...estoqueFiltro, tecnico_id: e.target.value })}>
+                <option value="">Filtrar por técnico</option>
+                {tecnicosVisiveis.filter((tec) => !estoqueFiltro.cc || tec.cc === estoqueFiltro.cc).map((tec) => <option key={tec.id} value={tec.id}>{tec.nome}</option>)}
+              </select>
+              <select style={styles.input} value={estoqueFiltro.item_id} onChange={(e) => setEstoqueFiltro({ ...estoqueFiltro, item_id: e.target.value })}>
+                <option value="">Filtrar por item</option>
+                {itens.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+              </select>
+            </div>
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Item</th>
+                    <th style={styles.th}>No estoque</th>
+                    <th style={styles.th}>Com técnicos</th>
+                    <th style={styles.th}>Total</th>
+                    <th style={styles.th}>Mínimo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {estoqueConsolidadoFiltrado.length === 0 ? (
+                    <tr><td style={styles.td} colSpan={5}>Nenhum registro encontrado para os filtros selecionados.</td></tr>
+                  ) : (
+                    estoqueConsolidadoFiltrado.map((registro, index) => (
+                      <tr key={`${registro.itemId}-${index}`}>
+                        <td style={styles.td}>{registro.itemNome}</td>
+                        <td style={styles.td}>{registro.estoque}</td>
+                        <td style={styles.td}>{registro.comTecnico}</td>
+                        <td style={styles.td}>{registro.total}</td>
+                        <td style={styles.td}>{registro.minimo}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
 
-        {pagina === "usuarios" && (
-          <Placeholder
-            titulo="Usuários"
-            texto="Aqui vamos criar os acessos por cargo, login, senha e centro de custo."
-          />
+        {!carregando && pagina === "usuarios" && roleCanManageUsers(usuarioAtual) && (
+          <div style={styles.section}>
+            <h3 style={styles.sectionTitle}>Usuários e cargos</h3>
+                <div style={styles.formGrid}>
+                  <input style={styles.input} placeholder="Nome" value={usuarioForm.nome} onChange={(e) => setUsuarioForm({ ...usuarioForm, nome: e.target.value })} />
+                  <input style={styles.input} placeholder="Usuário" value={usuarioForm.usuario} onChange={(e) => setUsuarioForm({ ...usuarioForm, usuario: e.target.value })} />
+                  <input style={styles.input} placeholder={`Senha (opcional, padrão: ${DEFAULT_USER_PASSWORD})`} value={usuarioForm.senha} onChange={(e) => setUsuarioForm({ ...usuarioForm, senha: e.target.value })} />
+                  <select
+                    style={styles.input}
+                    value={usuarioForm.cargo}
+                    onChange={(e) =>
+                      setUsuarioForm((prev) => ({
+                        ...prev,
+                        cargo: e.target.value,
+                        ccs: ["Admin", "Gerente", "SUP. Almoxarifado"].includes(e.target.value) ? [...CCS] : [],
+                        permissions: getDefaultPermissions(e.target.value),
+                      }))
+                    }
+                  >
+                    {CARGOS.map((cargo) => <option key={cargo} value={cargo}>{cargo}</option>)}
+                  </select>
+                </div>
+
+                <div style={styles.sectionMini}>
+                  <h4 style={styles.sectionMiniTitle}>Permissões do usuário</h4>
+                  <div style={styles.permissionGrid}>
+                    <label style={styles.permissionCard}>
+                      <input type="checkbox" checked={usuarioForm.permissions?.triangulacaoAcesso === true} onChange={(e) => setUsuarioForm((prev) => ({ ...prev, permissions: { ...prev.permissions, triangulacaoAcesso: e.target.checked } }))} />
+                      <div>
+                        <strong>Acessar triangulação</strong>
+                        <div style={styles.permissionHint}>Mostra a área de triangulação.</div>
+                      </div>
+                    </label>
+                    <label style={styles.permissionCard}>
+                      <input type="checkbox" checked={usuarioForm.permissions?.triangulacaoSolicitar === true} onChange={(e) => setUsuarioForm((prev) => ({ ...prev, permissions: { ...prev.permissions, triangulacaoSolicitar: e.target.checked } }))} />
+                      <div>
+                        <strong>Solicitar triangulação</strong>
+                        <div style={styles.permissionHint}>Permite abrir solicitações.</div>
+                      </div>
+                    </label>
+                    <label style={styles.permissionCard}>
+                      <input type="checkbox" checked={usuarioForm.permissions?.triangulacaoAprovar === true} onChange={(e) => setUsuarioForm((prev) => ({ ...prev, permissions: { ...prev.permissions, triangulacaoAprovar: e.target.checked } }))} />
+                      <div>
+                        <strong>Aprovar triangulação</strong>
+                        <div style={styles.permissionHint}>Permite aprovar/reprovar dentro dos CCs autorizados.</div>
+                      </div>
+                    </label>
+                    <label style={styles.permissionCard}>
+                      <input type="checkbox" checked={usuarioForm.permissions?.visualizarValores === true} onChange={(e) => setUsuarioForm((prev) => ({ ...prev, permissions: { ...prev.permissions, visualizarValores: e.target.checked } }))} />
+                      <div>
+                        <strong>Visualizar valores</strong>
+                        <div style={styles.permissionHint}>Permite ver os valores totais no dashboard.</div>
+                      </div>
+                    </label>
+                    <label style={styles.permissionCard}>
+                      <input type="checkbox" checked={usuarioForm.permissions?.cadastroItens === true} onChange={(e) => setUsuarioForm((prev) => ({ ...prev, permissions: { ...prev.permissions, cadastroItens: e.target.checked } }))} />
+                      <div>
+                        <strong>Cadastro de itens</strong>
+                        <div style={styles.permissionHint}>Cadastrar, importar e excluir itens.</div>
+                      </div>
+                    </label>
+                    <label style={styles.permissionCard}>
+                      <input type="checkbox" checked={usuarioForm.permissions?.cadastroTecnicos === true} onChange={(e) => setUsuarioForm((prev) => ({ ...prev, permissions: { ...prev.permissions, cadastroTecnicos: e.target.checked } }))} />
+                      <div>
+                        <strong>Cadastro de técnicos</strong>
+                        <div style={styles.permissionHint}>Cadastrar, importar e excluir técnicos.</div>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {!["Admin", "Gerente", "SUP. Almoxarifado"].includes(usuarioForm.cargo) && (
+                  <div style={styles.sectionMini}>
+                    <h4 style={styles.sectionMiniTitle}>Escolher manualmente os CCs</h4>
+                    <div style={styles.ccSelectorGrid}>
+                      {CCS.map((cc) => (
+                        <label key={cc} style={styles.ccChip}>
+                          <input
+                            type="checkbox"
+                            checked={usuarioForm.ccs.includes(cc)}
+                            onChange={(e) =>
+                              setUsuarioForm((prev) => ({
+                                ...prev,
+                                ccs: e.target.checked
+                                  ? [...prev.ccs, cc]
+                                  : prev.ccs.filter((item) => item !== cc),
+                              }))
+                            }
+                          />
+                          <span>{cc}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <button style={styles.primaryButtonInline} onClick={cadastrarUsuario}>Cadastrar usuário</button>
+                <p style={styles.permissionHint}>
+                  Se a senha ficar em branco, o usuário será criado com senha padrão e será obrigado a trocar no primeiro acesso.
+                </p>
+
+            <div style={styles.userCardsGrid}>
+              {usuariosVisiveis.map((user) => {
+                const expandido = usuarioExpandidoId === user.id;
+                return (
+                  <div key={user.id} style={styles.userCard}>
+                    <div style={styles.userCardHeader}>
+                      <div>
+                        <div style={styles.userCardName}>{user.nome}</div>
+                        <div style={styles.userCardMeta}>
+                          {user.usuario} • {user.cargo} • {user.ativo === false ? "Inativo" : "Ativo"}
+                        </div>
+                      </div>
+                      <div style={styles.actionRow}>
+                        {roleCanManageUsers(usuarioAtual) && (
+                          <button style={styles.secondaryButtonInline} onClick={() => setUsuarioExpandidoId((prev) => (prev === user.id ? null : user.id))}>
+                            {expandido ? "Recolher" : "Configurar"}
+                          </button>
+                        )}
+                        {roleCanManageUsers(usuarioAtual) && (
+                          <button style={styles.secondaryButtonInline} onClick={() => alternarUsuarioAtivo(user.id)}>
+                            {user.ativo === false ? "Ativar" : "Desativar"}
+                          </button>
+                        )}
+                        {roleCanManageUsers(usuarioAtual) && (
+                          <button style={styles.deleteButton} onClick={() => excluirUsuario(user.id)}>
+                            Excluir
+                          </button>
+                        )}
+                        {roleCanManageUsers(usuarioAtual) && (
+                          <button style={styles.secondaryButtonInline} onClick={() => resetarSenhaUsuario(user.id)}>
+                            Resetar senha
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={styles.userChipsRow}>
+                      {(user.ccs || []).length === 0 ? (
+                        <span style={styles.userChipMuted}>Sem CC liberado</span>
+                      ) : (
+                        (user.ccs || []).map((cc) => <span key={cc} style={styles.userChip}>{cc}</span>)
+                      )}
+                    </div>
+
+                    <div style={styles.userPermissionRow}>
+                      <PermissionBadge ativo={user.permissions?.triangulacaoAcesso} label="Acesso triangulação" />
+                      <PermissionBadge ativo={user.permissions?.triangulacaoSolicitar} label="Solicitar triangulação" />
+                      <PermissionBadge ativo={user.permissions?.triangulacaoAprovar} label="Aprovar triangulação" />
+                      <PermissionBadge ativo={user.permissions?.visualizarValores} label="Visualizar valores" />
+                      <PermissionBadge ativo={user.permissions?.cadastroItens} label="Cadastro de itens" />
+                      <PermissionBadge ativo={user.permissions?.cadastroTecnicos} label="Cadastro de técnicos" />
+                    </div>
+
+                    {expandido && roleCanManageUsers(usuarioAtual) && (
+                      <div style={styles.userCardBody}>
+                        {!["Admin", "Gerente", "SUP. Almoxarifado"].includes(user.cargo) ? (
+                          <>
+                            <h4 style={styles.sectionMiniTitle}>Escolher manualmente os CCs</h4>
+                            <div style={styles.ccSelectorGrid}>
+                              {CCS.map((cc) => (
+                                <label key={cc} style={styles.ccChip}>
+                                  <input type="checkbox" checked={(user.ccs || []).includes(cc)} onChange={(e) => atualizarUsuarioCC(user.id, cc, e.target.checked)} />
+                                  <span>{cc}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <div style={styles.permissionHint}>Esse cargo tem acesso automático a todos os CCs.</div>
+                        )}
+
+                        <h4 style={{ ...styles.sectionMiniTitle, marginTop: 18 }}>O que esse usuário pode fazer</h4>
+                        <div style={styles.permissionGrid}>
+                          <label style={styles.permissionCard}>
+                            <input type="checkbox" checked={user.permissions?.triangulacaoAcesso === true} onChange={(e) => atualizarUsuarioPermissao(user.id, "triangulacaoAcesso", e.target.checked)} />
+                            <div>
+                              <strong>Acessar triangulação</strong>
+                              <div style={styles.permissionHint}>Mostrar área de triangulação.</div>
+                            </div>
+                          </label>
+                          <label style={styles.permissionCard}>
+                            <input type="checkbox" checked={user.permissions?.triangulacaoSolicitar === true} onChange={(e) => atualizarUsuarioPermissao(user.id, "triangulacaoSolicitar", e.target.checked)} />
+                            <div>
+                              <strong>Solicitar triangulação</strong>
+                              <div style={styles.permissionHint}>Criar solicitações.</div>
+                            </div>
+                          </label>
+                          <label style={styles.permissionCard}>
+                            <input type="checkbox" checked={user.permissions?.triangulacaoAprovar === true} onChange={(e) => atualizarUsuarioPermissao(user.id, "triangulacaoAprovar", e.target.checked)} />
+                            <div>
+                              <strong>Aprovar triangulação</strong>
+                              <div style={styles.permissionHint}>Aprovar/reprovar solicitações.</div>
+                            </div>
+                          </label>
+                          <label style={styles.permissionCard}>
+                            <input type="checkbox" checked={user.permissions?.visualizarValores === true} onChange={(e) => atualizarUsuarioPermissao(user.id, "visualizarValores", e.target.checked)} />
+                            <div>
+                              <strong>Visualizar valores</strong>
+                              <div style={styles.permissionHint}>Exibir valores totais financeiros no dashboard.</div>
+                            </div>
+                          </label>
+                          <label style={styles.permissionCard}>
+                            <input type="checkbox" checked={user.permissions?.cadastroItens === true} onChange={(e) => atualizarUsuarioPermissao(user.id, "cadastroItens", e.target.checked)} />
+                            <div>
+                              <strong>Cadastro de itens</strong>
+                              <div style={styles.permissionHint}>Cadastro, importação e exclusão.</div>
+                            </div>
+                          </label>
+                          <label style={styles.permissionCard}>
+                            <input type="checkbox" checked={user.permissions?.cadastroTecnicos === true} onChange={(e) => atualizarUsuarioPermissao(user.id, "cadastroTecnicos", e.target.checked)} />
+                            <div>
+                              <strong>Cadastro de técnicos</strong>
+                              <div style={styles.permissionHint}>Cadastro, importação e exclusão.</div>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={styles.sectionMini}>
+              <h4 style={styles.sectionMiniTitle}>Regras de acesso implantadas</h4>
+              <div style={styles.minimosLista}>
+                <div style={styles.minimoLinha}><strong>Admin:</strong> acesso total.</div>
+                <div style={styles.minimoLinha}><strong>Gerente:</strong> acesso total.</div>
+                <div style={styles.minimoLinha}><strong>Coordenador:</strong> vê tudo, movimenta apenas os próprios CCs e aprova triangulação somente quando origem e destino são dos CCs sob sua responsabilidade.</div>
+                <div style={styles.minimoLinha}><strong>SUP. Almoxarifado:</strong> vê e movimenta todos os CCs, mas não aprova triangulação automaticamente sem a permissão ligada.</div>
+                <div style={styles.minimoLinha}><strong>Sup. Técnico:</strong> apenas consulta o próprio CC, salvo permissões adicionais liberadas manualmente.</div>
+                <div style={styles.minimoLinha}><strong>Ass.Logistica:</strong> vê e movimenta apenas os próprios CCs, de acordo com as permissões ligadas.</div>
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>
   );
 }
 
-function MetricCard({ titulo, valor }) {
+function DashboardIcon({ iconKey }) {
+  const common = { ...styles.cardIconSvg, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" };
+  if (iconKey === "kits") {
+    return (
+      <svg {...common}>
+        <path d="M3 8.5 12 4l9 4.5-9 4.5L3 8.5Z" />
+        <path d="M3 8.5V16l9 4 9-4V8.5" />
+        <path d="M12 13v7" />
+      </svg>
+    );
+  }
+  if (iconKey === "tecnicos") {
+    return (
+      <svg {...common}>
+        <circle cx="9" cy="8" r="2.5" />
+        <circle cx="16.5" cy="9" r="2" />
+        <path d="M4.5 18c.7-2.3 2.4-3.5 4.5-3.5S12.8 15.7 13.5 18" />
+        <path d="M14 17.5c.5-1.6 1.7-2.5 3.3-2.5 1.4 0 2.6.8 3.2 2.3" />
+      </svg>
+    );
+  }
+  if (iconKey === "estoque") {
+    return (
+      <svg {...common}>
+        <path d="M3 21h18" />
+        <rect x="5" y="10" width="14" height="11" rx="1.5" />
+        <path d="M8 10V6.5a1.5 1.5 0 0 1 1.5-1.5h5A1.5 1.5 0 0 1 16 6.5V10" />
+      </svg>
+    );
+  }
+  if (iconKey === "campo") {
+    return (
+      <svg {...common}>
+        <path d="M4 19h16" />
+        <path d="M8 19v-8l4-2 4 2v8" />
+        <circle cx="12" cy="6.5" r="2" />
+      </svg>
+    );
+  }
+  if (iconKey === "critico") {
+    return (
+      <svg {...common}>
+        <path d="m6 8 10 10" />
+        <path d="M8.8 5.2a2.2 2.2 0 0 1 3.1 0l1.9 1.9a2.2 2.2 0 0 1 0 3.1L9.7 14.3a2.2 2.2 0 0 1-3.1 0l-1.9-1.9a2.2 2.2 0 0 1 0-3.1Z" />
+        <path d="m16.5 5.5 4 4" />
+        <path d="m20.5 5.5-4 4" />
+      </svg>
+    );
+  }
+  return null;
+}
+
+function MetricCard({ titulo, valor, destaque = false, iconKey = null }) {
   return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>{titulo}</div>
-      <div style={styles.cardValue}>{valor}</div>
+    <div style={{ ...styles.card, ...(destaque ? styles.cardHighlight : {}) }}>
+      <div style={styles.cardTitleRow}>
+        <div style={styles.cardTitle}>{titulo}</div>
+        {iconKey ? <span style={styles.cardIcon}><DashboardIcon iconKey={iconKey} /></span> : null}
+      </div>
+      <div style={styles.cardValueSmall}>{valor}</div>
     </div>
   );
 }
 
-function Placeholder({ titulo, texto }) {
+function SummaryBox({ titulo, valor }) {
   return (
-    <div style={styles.section}>
-      <h3 style={styles.sectionTitle}>{titulo}</h3>
-      <p style={styles.mutedText}>{texto}</p>
+    <div style={styles.summaryBox}>
+      <div style={styles.cardTitle}>{titulo}</div>
+      <div style={styles.summaryValue}>{valor}</div>
     </div>
   );
+}
+
+function PermissionBadge({ ativo, label }) {
+  return (
+    <span
+      style={{
+        ...styles.permissionBadge,
+        ...(ativo ? styles.permissionBadgeOn : styles.permissionBadgeOff),
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function MenuIcon({ iconKey }) {
+  const common = {
+    ...styles.menuIconSvg,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+  };
+
+  if (iconKey === "dashboard") {
+    return (
+      <svg {...common}>
+        <rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.5" />
+        <rect x="13" y="3.5" width="7.5" height="4.5" rx="1.5" />
+        <rect x="13" y="10" width="7.5" height="10.5" rx="1.5" />
+        <rect x="3.5" y="13" width="7.5" height="7.5" rx="1.5" />
+      </svg>
+    );
+  }
+  if (iconKey === "itens") {
+    return (
+      <svg {...common}>
+        <rect x="4" y="5" width="16" height="14" rx="2" />
+        <path d="M9 5v14" />
+      </svg>
+    );
+  }
+  if (iconKey === "tecnicos") {
+    return (
+      <svg {...common}>
+        <circle cx="9" cy="8.5" r="2.3" />
+        <circle cx="16" cy="9.5" r="1.9" />
+        <path d="M5.3 18c.8-2.1 2.2-3.2 3.7-3.2 1.6 0 3 .9 3.8 3" />
+        <path d="M14 17.8c.5-1.4 1.5-2.2 2.8-2.2s2.3.7 2.9 2" />
+      </svg>
+    );
+  }
+  if (iconKey === "movimentacoes") {
+    return (
+      <svg {...common}>
+        <path d="M4 8h12" />
+        <path d="m12 4 4 4-4 4" />
+        <path d="M20 16H8" />
+        <path d="m12 12-4 4 4 4" />
+      </svg>
+    );
+  }
+  if (iconKey === "estoque") {
+    return (
+      <svg {...common}>
+        <path d="M3 21h18" />
+        <rect x="5" y="10" width="14" height="11" rx="1.5" />
+        <path d="M8 10V6.5a1.5 1.5 0 0 1 1.5-1.5h5A1.5 1.5 0 0 1 16 6.5V10" />
+      </svg>
+    );
+  }
+  if (iconKey === "usuarios") {
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="8" r="2.5" />
+        <path d="M6 19c.9-2.5 2.8-3.8 6-3.8s5.1 1.3 6 3.8" />
+      </svg>
+    );
+  }
+  return null;
 }
 
 const styles = {
   loginBg: {
     minHeight: "100vh",
-    background: "#f1f5f9",
+    background: "linear-gradient(135deg, #e2e8f0 0%, #f8fafc 55%, #dbeafe 100%)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -587,40 +2638,35 @@ const styles = {
   },
   loginCard: {
     width: "100%",
-    maxWidth: 430,
+    maxWidth: 460,
     background: "#ffffff",
-    borderRadius: 20,
-    padding: 28,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
+    borderRadius: 24,
+    padding: 32,
+    boxShadow: "0 24px 60px rgba(15,23,42,0.16)", border: "1px solid rgba(148,163,184,0.22)",
     boxSizing: "border-box",
   },
-  loginTitle: {
-    marginTop: 0,
-    marginBottom: 24,
-    color: "#0f172a",
-    fontSize: 32,
-  },
-  label: {
-    display: "block",
-    marginBottom: 8,
-    color: "#0f172a",
-    fontWeight: 600,
-  },
+  brandRow: { display: "flex", alignItems: "center", gap: 14, marginBottom: 8 },
+  brandLogo: { width: 70, height: 36, objectFit: "contain", borderRadius: 6 },
+  loginBadge: { display: "inline-flex", background: "#e0e7ff", color: "#3730a3", padding: "6px 10px", borderRadius: 999, fontSize: 12, fontWeight: 700, marginBottom: 14 },
+  loginTitle: { marginTop: 0, marginBottom: 10, color: "#0f172a", fontSize: 32, lineHeight: 1.1, letterSpacing: "-0.02em" },
+  loginText: { marginTop: 0, marginBottom: 20, color: "#475569", fontSize: 14 },
+  label: { display: "block", marginBottom: 8, color: "#0f172a", fontWeight: 600 },
   input: {
     width: "100%",
     padding: 12,
     marginBottom: 16,
     borderRadius: 10,
-    border: "1px solid #cbd5e1",
+    border: "1px solid #cbd5e1", boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
     boxSizing: "border-box",
     fontSize: 14,
+    background: "#fff",
   },
   primaryButton: {
     width: "100%",
     padding: 14,
     borderRadius: 10,
     border: 0,
-    background: "#0f172a",
+    background: "linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%)",
     color: "#ffffff",
     cursor: "pointer",
     fontSize: 15,
@@ -633,184 +2679,27 @@ const styles = {
     color: "#ffffff",
     cursor: "pointer",
     fontSize: 14,
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    textDecoration: "none",
   },
   secondaryButtonInline: {
     padding: "12px 18px",
     borderRadius: 10,
-    border: "1px solid #cbd5e1",
+    border: "1px solid #cbd5e1", boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
     background: "#ffffff",
     color: "#0f172a",
     cursor: "pointer",
     fontSize: 14,
   },
-  actionRow: {
-    display: "flex",
-    gap: 12,
-    flexWrap: "wrap",
-    alignItems: "center",
+  disabledButton: {
+    opacity: 0.6,
+    cursor: "not-allowed",
   },
-  loginHint: {
-    marginTop: 16,
-    fontSize: 12,
-    color: "#64748b",
-  },
-  appShell: {
-    minHeight: "100vh",
-    display: "flex",
-    background: "#f8fafc",
-    fontFamily: "Arial, sans-serif",
-  },
-  sidebar: {
-    width: 260,
-    background: "#0f172a",
-    color: "#ffffff",
-    padding: 24,
-    boxSizing: "border-box",
-  },
-  sidebarHeader: {
-    fontSize: 24,
-    fontWeight: 700,
-    marginBottom: 28,
-    lineHeight: 1.2,
-  },
-  menu: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
-  },
-  menuButton: {
-    background: "transparent",
-    color: "#cbd5e1",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 10,
-    padding: 12,
-    textAlign: "left",
-    cursor: "pointer",
-    fontSize: 14,
-  },
-  menuButtonActive: {
-    background: "#1e293b",
-    color: "#ffffff",
-  },
-  main: {
-    flex: 1,
-    padding: 28,
-    boxSizing: "border-box",
-  },
-  topbar: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 24,
-    gap: 16,
-  },
-  pageTitle: {
-    margin: 0,
-    color: "#0f172a",
-  },
-  topbarSub: {
-    color: "#64748b",
-    fontSize: 14,
-    marginTop: 6,
-  },
-  logoutButton: {
-    padding: "10px 16px",
-    borderRadius: 10,
+  approveButton: {
+    padding: "8px 12px",
+    borderRadius: 8,
     border: 0,
-    background: "#0f172a",
+    background: "#16a34a",
     color: "#ffffff",
     cursor: "pointer",
-  },
-  cardsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-    gap: 16,
-  },
-  card: {
-    background: "#ffffff",
-    borderRadius: 16,
-    padding: 20,
-    boxShadow: "0 8px 20px rgba(0,0,0,0.06)",
-  },
-  cardTitle: {
-    color: "#334155",
-    fontSize: 15,
-  },
-  cardValue: {
-    marginTop: 12,
-    fontSize: 34,
-    fontWeight: 700,
-    color: "#0f172a",
-  },
-  section: {
-    background: "#ffffff",
-    borderRadius: 16,
-    padding: 20,
-    boxShadow: "0 8px 20px rgba(0,0,0,0.06)",
-    marginTop: 24,
-  },
-  sectionMini: {
-    background: "#f8fafc",
-    border: "1px solid #e2e8f0",
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 16,
-  },
-  sectionMiniTitle: {
-    marginTop: 0,
-    marginBottom: 16,
-    color: "#0f172a",
-  },
-  sectionTitle: {
-    marginTop: 0,
-    color: "#0f172a",
-  },
-  mutedText: {
-    color: "#64748b",
-    marginBottom: 0,
-  },
-  formGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: 12,
-    marginBottom: 12,
-  },
-  tableWrap: {
-    marginTop: 24,
-    overflowX: "auto",
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-  },
-  th: {
-    textAlign: "left",
-    padding: 12,
-    borderBottom: "1px solid #e2e8f0",
-    color: "#334155",
-    fontSize: 14,
-    verticalAlign: "top",
-  },
-  td: {
-    padding: 12,
-    borderBottom: "1px solid #e2e8f0",
-    fontSize: 14,
-    color: "#0f172a",
-    verticalAlign: "top",
-  },
-  minimosLista: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 4,
-    minWidth: 240,
-  },
-  minimoLinha: {
-    fontSize: 12,
-    color: "#334155",
   },
   deleteButton: {
     padding: "8px 12px",
@@ -820,4 +2709,94 @@ const styles = {
     color: "#ffffff",
     cursor: "pointer",
   },
+  fileButton: {
+    padding: "12px 18px",
+    borderRadius: 10,
+    border: "1px solid #cbd5e1", boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
+    background: "#ffffff",
+    color: "#0f172a",
+    cursor: "pointer",
+    fontSize: 14,
+    display: "inline-flex",
+    alignItems: "center",
+  },
+  actionRow: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" },
+  loginHint: { marginTop: 16, fontSize: 12, color: "#64748b" },
+  appShell: { minHeight: "100vh", display: "flex", background: "#eef2ff", fontFamily: "Arial, sans-serif" },
+  sidebar: { width: 280, background: "linear-gradient(180deg, #0b1220 0%, #111827 100%)", color: "#ffffff", padding: 24, boxSizing: "border-box", boxShadow: "8px 0 30px rgba(15,23,42,0.18)", position: "sticky", top: 0, height: "100vh", overflowY: "auto" },
+  sidebarHeader: { fontSize: 23, fontWeight: 700, marginBottom: 18, lineHeight: 1.15, display: "flex", flexDirection: "column", gap: 10 },
+  sidebarLogo: { width: 100, height: 44, objectFit: "contain", borderRadius: 6, background: "#ffffff", padding: "4px 6px" },
+  userBox: { background: "rgba(30,41,59,0.9)", borderRadius: 14, padding: 12, marginBottom: 22, border: "1px solid rgba(148,163,184,0.2)" },
+  userBoxName: { fontWeight: 700 },
+  userBoxRole: { color: "#cbd5e1", marginTop: 6, fontSize: 13 },
+  menu: { display: "flex", flexDirection: "column", gap: 10 },
+  menuButtonContent: { display: "inline-flex", alignItems: "center", gap: 10 },
+  menuIconSvg: { width: 18, height: 18, display: "block" },
+  menuButton: {
+    background: "transparent",
+    color: "#cbd5e1",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 12,
+    padding: 12,
+    textAlign: "left",
+    cursor: "pointer",
+    fontSize: 14,
+  },
+  menuButtonActive: {
+    background: "linear-gradient(135deg, rgba(30,41,59,1) 0%, rgba(37,99,235,0.32) 100%)",
+    color: "#bfdbfe",
+    border: "1px solid rgba(96,165,250,0.5)",
+    boxShadow: "inset 0 0 0 1px rgba(30,64,175,0.25)",
+  },
+  main: { flex: 1, padding: 32, boxSizing: "border-box", maxWidth: "calc(100vw - 280px)" },
+  topbar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, gap: 16, background: "#ffffff", border: "1px solid #dbeafe", borderRadius: 16, padding: "14px 18px", boxShadow: "0 8px 18px rgba(15,23,42,0.06)", backdropFilter: "blur(4px)" },
+  pageTitle: { margin: 0, color: "#0f172a" },
+  topbarSub: { color: "#64748b", fontSize: 14, marginTop: 6 },
+  logoutButton: { padding: "10px 16px", borderRadius: 10, border: 0, background: "#0f172a", color: "#ffffff", cursor: "pointer" },
+  cardsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 },
+  card: { background: "#ffffff", borderRadius: 18, padding: 20, boxShadow: "0 16px 36px rgba(15,23,42,0.08)", minHeight: 120, border: "1px solid #e2e8f0", transition: "transform 0.2s ease" },
+  cardHighlight: { border: "2px solid #fecaca" },
+  cardTitleRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  cardTitle: { color: "#334155", fontSize: 15 },
+  cardIcon: { color: "#1d4ed8", lineHeight: 1, display: "inline-flex", alignItems: "center" },
+  cardIconSvg: { width: 22, height: 22, display: "block" },
+  cardValueSmall: { marginTop: 12, fontSize: 22, fontWeight: 700, color: "#0f172a", lineHeight: 1.25 },
+  section: { background: "#ffffff", borderRadius: 18, padding: 20, boxShadow: "0 16px 36px rgba(15,23,42,0.08)", marginTop: 24, border: "1px solid #e2e8f0" },
+  sectionMini: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 14, padding: 16, marginTop: 16, marginBottom: 16 },
+  sectionMiniTitle: { marginTop: 0, marginBottom: 16, color: "#0f172a" },
+  sectionTitle: { marginTop: 0, color: "#0f172a" },
+  sectionHeaderLine: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  mutedText: { color: "#64748b", marginBottom: 0 },
+  warningText: { color: "#9a3412", background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 10, padding: "8px 10px", marginBottom: 12, fontSize: 13 },
+  formGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12 },
+  tableWrap: { marginTop: 24, overflowX: "auto" },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: { textAlign: "left", padding: 12, borderBottom: "1px solid #e2e8f0", color: "#334155", fontSize: 14, verticalAlign: "top" },
+  td: { padding: 12, borderBottom: "1px solid #e2e8f0", fontSize: 14, color: "#0f172a", verticalAlign: "top" },
+  minimosLista: { display: "flex", flexDirection: "column", gap: 4, minWidth: 240 },
+  minimoLinha: { fontSize: 12, color: "#334155" },
+  warningBox: { background: "#fff7ed", border: "1px solid #fdba74", color: "#9a3412", borderRadius: 12, padding: 12, marginBottom: 16 },
+  summaryGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 },
+  summaryBox: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 14, padding: 16 },
+  summaryValue: { fontSize: 20, fontWeight: 700, marginTop: 8, color: "#0f172a" },
+  checkboxGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  checkboxLabel: { display: "flex", gap: 8, alignItems: "center", fontSize: 14 },
+  permissionGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 },
+  permissionCard: { display: "flex", gap: 12, alignItems: "flex-start", padding: 14, borderRadius: 14, border: "1px solid #dbeafe", background: "#f8fbff" },
+  permissionHint: { marginTop: 4, color: "#64748b", fontSize: 12, lineHeight: 1.4 },
+  ccSelectorGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 },
+  ccChip: { display: "flex", gap: 10, alignItems: "center", padding: 12, borderRadius: 14, border: "1px solid #cbd5e1", background: "#fff" },
+  userCardsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16, marginTop: 24 },
+  userCard: { border: "1px solid #e2e8f0", borderRadius: 18, padding: 18, background: "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)" },
+  userCardHeader: { display: "flex", justifyContent: "space-between", gap: 14, flexWrap: "wrap", alignItems: "center" },
+  userCardName: { fontSize: 18, fontWeight: 700, color: "#0f172a" },
+  userCardMeta: { fontSize: 13, color: "#64748b", marginTop: 6 },
+  userCardBody: { marginTop: 18, paddingTop: 18, borderTop: "1px solid #e2e8f0" },
+  userChipsRow: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 },
+  userChip: { padding: "6px 10px", borderRadius: 999, background: "#dbeafe", color: "#1d4ed8", fontSize: 12, fontWeight: 700 },
+  userChipMuted: { padding: "6px 10px", borderRadius: 999, background: "#e2e8f0", color: "#475569", fontSize: 12, fontWeight: 700 },
+  userPermissionRow: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 },
+  permissionBadge: { padding: "6px 10px", borderRadius: 999, fontSize: 12, fontWeight: 700, border: "1px solid transparent" },
+  permissionBadgeOn: { background: "#dcfce7", color: "#166534", borderColor: "#bbf7d0" },
+  permissionBadgeOff: { background: "#fee2e2", color: "#991b1b", borderColor: "#fecaca" },
 };

@@ -802,24 +802,29 @@ export default function App() {
       top10ItensSubstituidos: rankingSubstituicoes.slice(0, 10),
       top10TecnicosSubstituidores: rankingSubstituicoesTecnicos.slice(0, 10),
       totalItens: itens.length,
-      totalKitsDisponiveis: estoqueGeral
-        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
-        .reduce((acc, registro) => {
-          const qtdKit = Number(itensById[Number(registro.itemId)]?.qtdKit || 0);
-          if (qtdKit <= 0) return acc;
-          return acc + Math.floor(Number(registro.estoque || 0) / qtdKit);
-        }, 0),
-      valorTotalKitsDisponiveis: estoqueGeral
-        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
-        .reduce((acc, registro) => {
-          const itemRef = itensById[Number(registro.itemId)];
-          const qtdKit = Number(itemRef?.qtdKit || itemRef?.qtd_kit || 0);
-          if (qtdKit <= 0) return acc;
-          const est = Number(registro.estoque || 0);
-          const kitsCompletos = Math.floor(est / qtdKit);
-          const valorUnit = Number(itemRef?.valor || 0);
-          return acc + kitsCompletos * qtdKit * valorUnit;
-        }, 0),
+      totalKitsDisponiveis: (() => {
+        const itensComKit = itens.filter(
+          (item) => Number(item.qtd_kit ?? item.qtdKit ?? 0) > 0
+        );
+        if (itensComKit.length === 0) return 0;
+        const estoqueAlmoxarifadoPorCcItem = {};
+        estoqueGeral.forEach((r) => {
+          estoqueAlmoxarifadoPorCcItem[`${r.cc}-${Number(r.itemId)}`] = Number(r.estoque || 0);
+        });
+        return CCS.filter((cc) => roleCanViewCC(usuarioAtual, cc)).reduce((sumCc, cc) => {
+          const kitsPorItem = itensComKit.map((item) => {
+            const qtdKit = Number(item.qtd_kit ?? item.qtdKit ?? 0);
+            const est = estoqueAlmoxarifadoPorCcItem[`${cc}-${Number(item.id)}`] ?? 0;
+            return Math.floor(est / qtdKit);
+          });
+          return sumCc + Math.min(...kitsPorItem);
+        }, 0);
+      })(),
+      valorReferenciaKitsCadastro: itens.reduce((acc, item) => {
+        const qtdKit = Number(item.qtd_kit ?? item.qtdKit ?? 0);
+        if (qtdKit <= 0) return acc;
+        return acc + Number(item.valor || 0) * qtdKit;
+      }, 0),
       totalTecnicos: tecnicos.filter((tec) => roleCanViewCC(usuarioAtual, tec.cc)).length,
       totalNoEstoque: estoqueGeral
         .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
@@ -1951,10 +1956,10 @@ export default function App() {
               />
               <MetricCard titulo="Kits disponíveis para entrega" valor={indicadoresDashboard.totalKitsDisponiveis} iconKey="kits" />
               <MetricCard
-                titulo="Valor dos kits disponíveis (estoque)"
+                titulo="Valor de referência dos kits (cadastro)"
                 valor={
                   canViewDashboardValues(usuarioAtual)
-                    ? formatMoney(indicadoresDashboard.valorTotalKitsDisponiveis)
+                    ? formatMoney(indicadoresDashboard.valorReferenciaKitsCadastro)
                     : "Sem permissão"
                 }
                 iconKey="kits"
@@ -1968,13 +1973,18 @@ export default function App() {
                 valor={canViewDashboardValues(usuarioAtual) ? formatMoney(indicadoresDashboard.valorTotalNoEstoque) : "Sem permissão"}
               />
             </div>
-            {canViewDashboardValues(usuarioAtual) && (
-              <p style={{ ...styles.mutedText, marginTop: 10 }}>
-                Valor dos kits: soma do valor das unidades que formam apenas os{" "}
-                <strong>kits completos</strong> no estoque (para cada item com Qtd/kit &gt; 0: kits × Qtd/kit × valor
-                unitário).
-              </p>
-            )}
+            <p style={{ ...styles.mutedText, marginTop: 10 }}>
+              <strong>Kit completo:</strong> cada item com Qtd/kit &gt; 0 entra na composição (quantas unidades daquele item
+              são necessárias por kit). <strong>Kits disponíveis para entrega</strong> soma, em cada CC que você vê, o{" "}
+              <strong>mínimo</strong> entre <code>estoque no almoxarifado ÷ Qtd/kit</code> de cada um desses itens — ou
+              seja, quantos kits completos dá para montar no CC (gargalo).{" "}
+              {canViewDashboardValues(usuarioAtual) && (
+                <>
+                  <strong>Valor de referência dos kits</strong> é a soma de <strong>valor unitário × Qtd/kit</strong> em
+                  todos esses itens (custo de um kit completo no cadastro, sem olhar estoque).
+                </>
+              )}
+            </p>
             {!canViewDashboardValues(usuarioAtual) && (
               <p style={{ ...styles.mutedText, marginTop: 10 }}>
                 Seu usuário não possui permissão para visualizar valores financeiros no dashboard.
@@ -2143,8 +2153,18 @@ export default function App() {
                   <input style={styles.input} placeholder="Código do item" value={itemForm.codigo} onChange={(e) => setItemForm({ ...itemForm, codigo: e.target.value })} />
                   <input style={styles.input} placeholder="Nome do item" value={itemForm.nome} onChange={(e) => setItemForm({ ...itemForm, nome: e.target.value })} />
                   <input style={styles.input} type="number" placeholder="Valor unitário" value={itemForm.valor} onChange={(e) => setItemForm({ ...itemForm, valor: e.target.value })} />
-                  <input style={styles.input} type="number" placeholder="Qtd por kit" value={itemForm.qtdKit} onChange={(e) => setItemForm({ ...itemForm, qtdKit: e.target.value })} />
+                  <input
+                    style={styles.input}
+                    type="number"
+                    placeholder="Qtd deste item no kit completo"
+                    value={itemForm.qtdKit}
+                    onChange={(e) => setItemForm({ ...itemForm, qtdKit: e.target.value })}
+                  />
                 </div>
+                <p style={styles.permissionHint}>
+                  Em cada kit completo, informe quantas unidades <strong>deste item</strong> são necessárias (ex.: 1 alicate
+                  → 1). Itens com Qtd/kit zero não entram na composição do kit no dashboard.
+                </p>
                 <div style={styles.sectionMini}>
                   <h4 style={styles.sectionMiniTitle}>Estoque mínimo por CC</h4>
                   <div style={styles.formGrid}>
@@ -2173,7 +2193,7 @@ export default function App() {
                     <th style={styles.th}>Código</th>
                     <th style={styles.th}>Nome</th>
                     <th style={styles.th}>Valor</th>
-                    <th style={styles.th}>Qtd/Kit</th>
+                    <th style={styles.th}>Qtd no kit</th>
                     <th style={styles.th}>Mínimos por CC</th>
                     <th style={styles.th}>Ação</th>
                   </tr>

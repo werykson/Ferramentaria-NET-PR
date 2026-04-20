@@ -300,6 +300,15 @@ function downloadWorkbook(filename, sheetName, rows) {
   XLSX.writeFile(wb, filename);
 }
 
+function downloadWorkbookSheets(filename, sheets) {
+  const wb = XLSX.utils.book_new();
+  sheets.forEach((sheet) => {
+    const ws = XLSX.utils.json_to_sheet(sheet.rows);
+    XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+  });
+  XLSX.writeFile(wb, filename);
+}
+
 function readExcelValue(row, aliases) {
   const normalized = Object.fromEntries(
     Object.entries(row || {}).map(([key, value]) => [normalizeHeaderKey(key), value])
@@ -751,11 +760,13 @@ export default function App() {
       if (mov.tipo === "substituicao_desgaste") substituicoes[chave].desgaste += qtd;
     });
 
-    const itemMaisSubstituido = Object.values(substituicoes).sort((a, b) => b.total - a.total)[0] || null;
+    const rankingSubstituicoes = Object.values(substituicoes).sort((a, b) => b.total - a.total);
+    const itemMaisSubstituido = rankingSubstituicoes[0] || null;
 
     return {
       itensCriticos,
       itemMaisSubstituido,
+      top10ItensSubstituidos: rankingSubstituicoes.slice(0, 10),
       totalItens: itens.length,
       totalKitsDisponiveis: estoqueGeral
         .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
@@ -1543,6 +1554,42 @@ export default function App() {
 
   const itensCriticosVisiveis = indicadoresDashboard.itensCriticos;
 
+  const exportarRelatorioEstoqueExcel = () => {
+    const consolidadoRows = estoqueGeral
+      .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+      .map((registro) => ({
+        CC: registro.cc,
+        ITEM_ID: Number(registro.itemId),
+        ITEM: registro.itemNome,
+        NO_ESTOQUE: Number(registro.estoque || 0),
+        COM_TECNICOS: Number(registro.comTecnico || 0),
+        TOTAL: Number(registro.total || 0),
+        MINIMO: Number(registro.minimo || 0),
+      }));
+
+    const tecnicoRows = estoquePorTecnico
+      .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+      .map((registro) => ({
+        CC: registro.cc,
+        TECNICO_ID: Number(registro.tecnico_id),
+        TECNICO: registro.tecnicoNome,
+        ITEM_ID: Number(registro.item_id),
+        ITEM: registro.itemNome,
+        QUANTIDADE: Number(registro.quantidade || 0),
+      }));
+
+    downloadWorkbookSheets("relatorio_estoque_completo.xlsx", [
+      {
+        name: "Consolidado_CC_Item",
+        rows: consolidadoRows.length ? consolidadoRows : [{ INFO: "Sem dados para exportar." }],
+      },
+      {
+        name: "Com_Tecnicos",
+        rows: tecnicoRows.length ? tecnicoRows : [{ INFO: "Sem dados para exportar." }],
+      },
+    ]);
+  };
+
   const estoqueConsolidadoFiltrado = useMemo(() => {
     const comTecnicoPorChave = {};
 
@@ -1807,16 +1854,35 @@ export default function App() {
             </div>
 
             <div style={styles.section}>
-              <h3 style={styles.sectionTitle}>Item mais substituído por perda, quebra e desgaste</h3>
-              {!indicadoresDashboard.itemMaisSubstituido ? (
+              <h3 style={styles.sectionTitle}>Top 10 itens mais substituídos (perda, quebra e desgaste)</h3>
+              {indicadoresDashboard.top10ItensSubstituidos.length === 0 ? (
                 <p style={styles.mutedText}>Ainda não existem substituições lançadas.</p>
               ) : (
-                <div style={styles.summaryGrid}>
-                  <SummaryBox titulo="Item" valor={indicadoresDashboard.itemMaisSubstituido.itemNome} />
-                  <SummaryBox titulo="Total" valor={indicadoresDashboard.itemMaisSubstituido.total} />
-                  <SummaryBox titulo="Perda" valor={indicadoresDashboard.itemMaisSubstituido.perda} />
-                  <SummaryBox titulo="Quebra" valor={indicadoresDashboard.itemMaisSubstituido.quebra} />
-                  <SummaryBox titulo="Desgaste" valor={indicadoresDashboard.itemMaisSubstituido.desgaste} />
+                <div style={styles.tableWrap}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Posição</th>
+                        <th style={styles.th}>Item</th>
+                        <th style={styles.th}>Total</th>
+                        <th style={styles.th}>Perda</th>
+                        <th style={styles.th}>Quebra</th>
+                        <th style={styles.th}>Desgaste</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {indicadoresDashboard.top10ItensSubstituidos.map((registro, index) => (
+                        <tr key={`${registro.item_id}-${index}`}>
+                          <td style={styles.td}>{index + 1}</td>
+                          <td style={styles.td}>{registro.itemNome}</td>
+                          <td style={styles.td}>{registro.total}</td>
+                          <td style={styles.td}>{registro.perda}</td>
+                          <td style={styles.td}>{registro.quebra}</td>
+                          <td style={styles.td}>{registro.desgaste}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -2180,7 +2246,14 @@ export default function App() {
 
         {!carregando && pagina === "estoque" && (
           <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>Visão consolidada de estoque</h3>
+            <div style={styles.sectionHeaderLine}>
+              <h3 style={styles.sectionTitle}>Visão consolidada de estoque</h3>
+              <div style={styles.actionRow}>
+                <button style={styles.secondaryButtonInline} onClick={exportarRelatorioEstoqueExcel}>
+                  Exportar relatório completo
+                </button>
+              </div>
+            </div>
             <p style={styles.mutedText}>
               Visualize em uma única tabela os totais por item e CC. Use os filtros para refinar por centro de custo, técnico e item.
             </p>

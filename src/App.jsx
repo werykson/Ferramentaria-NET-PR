@@ -458,6 +458,7 @@ export default function App() {
   });
   const [usuarioExpandidoId, setUsuarioExpandidoId] = useState(null);
   const [buscaUsuario, setBuscaUsuario] = useState("");
+  const [buscaItem, setBuscaItem] = useState("");
 
   useEffect(() => {
     if (pagina === "usuarios" && !roleCanManageUsers(usuarioAtual)) {
@@ -1908,8 +1909,29 @@ export default function App() {
     );
   };
 
+  const itensOrdenados = useMemo(
+    () =>
+      [...itens].sort((a, b) =>
+        String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR")
+      ),
+    [itens]
+  );
+
+  const itensFiltrados = useMemo(() => {
+    const termo = String(buscaItem || "").trim().toLowerCase();
+    if (!termo) return itensOrdenados;
+    return itensOrdenados.filter((item) => {
+      const nome = String(item?.nome || "").toLowerCase();
+      const codigo = String(item?.codigo || "").toLowerCase();
+      return nome.includes(termo) || codigo.includes(termo);
+    });
+  }, [itensOrdenados, buscaItem]);
+
   const usuariosVisiveis = useMemo(
-    () => usuariosSistema.map((user) => normalizeUser(user)),
+    () =>
+      usuariosSistema
+        .map((user) => normalizeUser(user))
+        .sort((a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR")),
     [usuariosSistema]
   );
   const usuariosFiltrados = useMemo(() => {
@@ -2522,6 +2544,15 @@ export default function App() {
               <p style={styles.mutedText}>Seu perfil pode consultar e exportar, mas não cadastrar itens.</p>
             )}
 
+            <div style={styles.sectionMini}>
+              <input
+                style={styles.input}
+                placeholder="Buscar item por nome ou código"
+                value={buscaItem}
+                onChange={(e) => setBuscaItem(e.target.value)}
+              />
+            </div>
+
             <div style={styles.tableWrap}>
               <table style={styles.table}>
                 <thead>
@@ -2538,8 +2569,10 @@ export default function App() {
                 <tbody>
                   {itens.length === 0 ? (
                     <tr><td style={styles.td} colSpan={7}>Nenhum item cadastrado.</td></tr>
+                  ) : itensFiltrados.length === 0 ? (
+                    <tr><td style={styles.td} colSpan={7}>Nenhum item encontrado para o filtro informado.</td></tr>
                   ) : (
-                    itens.map((item) =>
+                    itensFiltrados.map((item) =>
                       itemEditandoId === item.id ? (
                         <tr key={item.id}>
                           <td style={styles.td}>

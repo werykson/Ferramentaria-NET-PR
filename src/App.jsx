@@ -3060,14 +3060,16 @@ export default function App() {
                           <th style={styles.th}>Destino</th>
                           <th style={styles.th}>Item</th>
                           <th style={styles.th}>Qtd</th>
+                          <th style={styles.th}>Observação</th>
                           <th style={styles.th}>Solicitado por</th>
                           <th style={styles.th}>Status</th>
+                          <th style={styles.th}>Aprovado/Reprovado por</th>
                           <th style={styles.th}>Ação</th>
                         </tr>
                       </thead>
                       <tbody>
                         {triangulacoes.length === 0 ? (
-                          <tr><td style={styles.td} colSpan={8}>Nenhuma triangulação solicitada.</td></tr>
+                          <tr><td style={styles.td} colSpan={10}>Nenhuma triangulação solicitada.</td></tr>
                         ) : (
                           triangulacoes.map((tri) => {
                             const item = itensById[Number(tri.item_id)];
@@ -3079,8 +3081,10 @@ export default function App() {
                                 <td style={styles.td}>{tri.cc_destino}</td>
                                 <td style={styles.td}>{item?.nome || `Item #${tri.item_id}`}</td>
                                 <td style={styles.td}>{tri.quantidade}</td>
+                                <td style={styles.td}>{tri.observacao || "-"}</td>
                                 <td style={styles.td}>{tri.solicitado_nome}</td>
                                 <td style={styles.td}>{tri.status}</td>
+                                <td style={styles.td}>{tri.aprovado_nome || "-"}</td>
                                 <td style={styles.td}>
                                   {podeAprovar ? (
                                     <div style={styles.actionRow}>

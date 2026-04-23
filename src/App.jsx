@@ -391,6 +391,31 @@ async function withQueryTimeout(promise, label, timeoutMs = 12000) {
   ]);
 }
 
+async function insertMovimentacoesComAutor(linhas, usuario) {
+  const payloadComAutor = linhas.map((linha) => ({
+    ...linha,
+    movimentado_por: usuario?.usuario || null,
+    movimentado_nome: usuario?.nome || null,
+  }));
+
+  const tentativaComAutor = await supabase.from("movimentacoes").insert(payloadComAutor);
+  if (!tentativaComAutor.error) {
+    return { error: null, salvouAutor: true };
+  }
+
+  const erroTexto = String(tentativaComAutor.error?.message || "").toLowerCase();
+  const colunaAutorAusente =
+    erroTexto.includes("movimentado_por") ||
+    erroTexto.includes("movimentado_nome");
+
+  if (!colunaAutorAusente) {
+    return { error: tentativaComAutor.error, salvouAutor: false };
+  }
+
+  const tentativaLegado = await supabase.from("movimentacoes").insert(linhas);
+  return { error: tentativaLegado.error || null, salvouAutor: false };
+}
+
 function validarPoliticaSenha(senha) {
   const valor = String(senha || "").trim();
   if (valor.length < 8) {
@@ -1543,7 +1568,7 @@ export default function App() {
       observacao: linha.observacao?.trim() || null,
     }));
 
-    const { error } = await supabase.from("movimentacoes").insert(payload);
+    const { error, salvouAutor } = await insertMovimentacoesComAutor(payload, usuarioAtual);
     if (error) {
       console.error(error);
       captureException(error, { op: "salvarLoteMovimentacoes" });
@@ -1556,6 +1581,10 @@ export default function App() {
     setMovForm(emptyMovForm());
     setMovBuscaItem("");
     setMovBuscaTecnico("");
+    if (!salvouAutor) {
+      notify("Movimentações salvas, mas seu banco ainda não possui colunas de autor. Rode a migração para exibir o nome no histórico.", "warning");
+      return;
+    }
     notify("Movimentações salvas com sucesso.", "success");
   };
 
@@ -1645,7 +1674,7 @@ export default function App() {
       },
     ];
 
-    const { error } = await supabase.from("movimentacoes").insert(payload);
+    const { error, salvouAutor } = await insertMovimentacoesComAutor(payload, usuarioAtual);
     if (error) {
       console.error(error);
       captureException(error, { op: "aprovarTriangulacao_mov" });
@@ -1671,6 +1700,9 @@ export default function App() {
       );
     } else {
       notify("Triangulação aprovada.", "success");
+      if (!salvouAutor) {
+        notify("Movimentações da triangulação foram salvas sem o nome do autor (migração pendente no banco).", "warning");
+      }
     }
     await buscarTriangulacoes();
     await buscarMovimentacoes();
@@ -3117,13 +3149,14 @@ export default function App() {
                       <th style={styles.th}>CC</th>
                       <th style={styles.th}>Item</th>
                       <th style={styles.th}>Técnico</th>
+                      <th style={styles.th}>Movimentado por</th>
                       <th style={styles.th}>Qtd</th>
                       <th style={styles.th}>Observação</th>
                     </tr>
                   </thead>
                   <tbody>
                     {movimentacoes.filter((mov) => roleCanViewCC(usuarioAtual, mov.cc)).length === 0 ? (
-                      <tr><td style={styles.td} colSpan={7}>Nenhuma movimentação cadastrada.</td></tr>
+                      <tr><td style={styles.td} colSpan={8}>Nenhuma movimentação cadastrada.</td></tr>
                     ) : (
                       movimentacoes
                         .filter((mov) => roleCanViewCC(usuarioAtual, mov.cc))
@@ -3137,6 +3170,7 @@ export default function App() {
                               <td style={styles.td}>{mov.cc}</td>
                               <td style={styles.td}>{item?.nome || `Item #${mov.item_id}`}</td>
                               <td style={styles.td}>{tecnico?.nome || "-"}</td>
+                              <td style={styles.td}>{mov.movimentado_nome || mov.movimentado_por || "-"}</td>
                               <td style={styles.td}>{mov.quantidade}</td>
                               <td style={styles.td}>{mov.observacao || "-"}</td>
                             </tr>

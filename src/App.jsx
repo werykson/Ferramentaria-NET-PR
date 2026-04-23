@@ -434,6 +434,8 @@ export default function App() {
   const [movimentacoes, setMovimentacoes] = useState([]);
   const [movForm, setMovForm] = useState(emptyMovForm);
   const [loteMovimentacoes, setLoteMovimentacoes] = useState([]);
+  const [movBuscaItem, setMovBuscaItem] = useState("");
+  const [movBuscaTecnico, setMovBuscaTecnico] = useState("");
 
   const [triangulacoes, setTriangulacoes] = useState([]);
   const [triForm, setTriForm] = useState(emptyTriForm);
@@ -1504,6 +1506,8 @@ export default function App() {
 
     setLoteMovimentacoes((prev) => [...prev, { ...movForm, localId: uid() }]);
     setMovForm((prev) => ({ ...emptyMovForm(), cc: prev.cc }));
+    setMovBuscaItem("");
+    setMovBuscaTecnico("");
   };
 
   const removerDoLote = (localId) => {
@@ -1550,6 +1554,8 @@ export default function App() {
     await buscarMovimentacoes();
     setLoteMovimentacoes([]);
     setMovForm(emptyMovForm());
+    setMovBuscaItem("");
+    setMovBuscaTecnico("");
     notify("Movimentações salvas com sucesso.", "success");
   };
 
@@ -1927,6 +1933,23 @@ export default function App() {
     });
   }, [itensOrdenados, buscaItem]);
 
+  const opcoesItemMovimentacao = useMemo(
+    () =>
+      itensOrdenados.map((item) => ({
+        id: String(item.id),
+        label: `${item.nome} (${item.codigo})`,
+      })),
+    [itensOrdenados]
+  );
+
+  const opcoesItemMovimentacaoFiltradas = useMemo(() => {
+    const termo = String(movBuscaItem || "").trim().toLowerCase();
+    if (!termo) return opcoesItemMovimentacao.slice(0, 80);
+    return opcoesItemMovimentacao
+      .filter((opt) => opt.label.toLowerCase().includes(termo))
+      .slice(0, 80);
+  }, [opcoesItemMovimentacao, movBuscaItem]);
+
   const usuariosVisiveis = useMemo(
     () =>
       usuariosSistema
@@ -1958,6 +1981,26 @@ export default function App() {
       return nome.includes(termo) || cc.includes(termo);
     });
   }, [tecnicosVisiveis, buscaTecnico]);
+
+  const opcoesTecnicoMovimentacao = useMemo(
+    () =>
+      tecnicosVisiveis
+        .filter((tec) => !movForm.cc || tec.cc === movForm.cc)
+        .sort((a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR"))
+        .map((tec) => ({
+          id: String(tec.id),
+          label: `${tec.nome} (${tec.cc})`,
+        })),
+    [tecnicosVisiveis, movForm.cc]
+  );
+
+  const opcoesTecnicoMovimentacaoFiltradas = useMemo(() => {
+    const termo = String(movBuscaTecnico || "").trim().toLowerCase();
+    if (!termo) return opcoesTecnicoMovimentacao.slice(0, 80);
+    return opcoesTecnicoMovimentacao
+      .filter((opt) => opt.label.toLowerCase().includes(termo))
+      .slice(0, 80);
+  }, [opcoesTecnicoMovimentacao, movBuscaTecnico]);
 
   useEffect(() => {
     setTecnicoEditandoId(null);
@@ -2830,22 +2873,66 @@ export default function App() {
             <div style={styles.section}>
               <h3 style={styles.sectionTitle}>Lançar movimentações</h3>
               <div style={styles.formGrid}>
-                <select style={styles.input} value={movForm.tipo} onChange={(e) => setMovForm({ ...movForm, tipo: e.target.value, tecnico_id: "" })}>
+                <select
+                  style={styles.input}
+                  value={movForm.tipo}
+                  onChange={(e) => {
+                    setMovForm({ ...movForm, tipo: e.target.value, tecnico_id: "" });
+                    setMovBuscaTecnico("");
+                  }}
+                >
                   {TIPOS_MOV.map((tipo) => <option key={tipo.value} value={tipo.value}>{tipo.label}</option>)}
                 </select>
-                <select style={styles.input} value={movForm.cc} onChange={(e) => setMovForm({ ...movForm, cc: e.target.value, tecnico_id: "" })}>
+                <select
+                  style={styles.input}
+                  value={movForm.cc}
+                  onChange={(e) => {
+                    setMovForm({ ...movForm, cc: e.target.value, tecnico_id: "" });
+                    setMovBuscaTecnico("");
+                  }}
+                >
                   <option value="">Selecione o CC</option>
                   {CCS.filter((cc) => roleCanManageCC(usuarioAtual, cc)).map((cc) => <option key={cc} value={cc}>{cc}</option>)}
                 </select>
-                <select style={styles.input} value={movForm.item_id} onChange={(e) => setMovForm({ ...movForm, item_id: e.target.value })}>
-                  <option value="">Selecione o item</option>
-                  {itens.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
-                </select>
+                <div>
+                  <input
+                    style={styles.input}
+                    list="movimentacao-itens-list"
+                    placeholder="Selecione o item (digite para pesquisar)"
+                    value={movBuscaItem}
+                    onChange={(e) => {
+                      const valor = e.target.value;
+                      setMovBuscaItem(valor);
+                      const opcao = opcoesItemMovimentacao.find((opt) => opt.label === valor);
+                      setMovForm((prev) => ({ ...prev, item_id: opcao ? opcao.id : "" }));
+                    }}
+                  />
+                  <datalist id="movimentacao-itens-list">
+                    {opcoesItemMovimentacaoFiltradas.map((opt) => (
+                      <option key={opt.id} value={opt.label} />
+                    ))}
+                  </datalist>
+                </div>
                 {["saida_tecnico", "devolucao_tecnico", "substituicao_perda", "substituicao_quebra", "substituicao_desgaste"].includes(movForm.tipo) ? (
-                  <select style={styles.input} value={movForm.tecnico_id} onChange={(e) => setMovForm({ ...movForm, tecnico_id: e.target.value })}>
-                    <option value="">Selecione o técnico</option>
-                    {tecnicosVisiveis.filter((tec) => !movForm.cc || tec.cc === movForm.cc).map((tec) => <option key={tec.id} value={tec.id}>{tec.nome}</option>)}
-                  </select>
+                  <div>
+                    <input
+                      style={styles.input}
+                      list="movimentacao-tecnicos-list"
+                      placeholder="Selecione o técnico (digite para pesquisar)"
+                      value={movBuscaTecnico}
+                      onChange={(e) => {
+                        const valor = e.target.value;
+                        setMovBuscaTecnico(valor);
+                        const opcao = opcoesTecnicoMovimentacao.find((opt) => opt.label === valor);
+                        setMovForm((prev) => ({ ...prev, tecnico_id: opcao ? opcao.id : "" }));
+                      }}
+                    />
+                    <datalist id="movimentacao-tecnicos-list">
+                      {opcoesTecnicoMovimentacaoFiltradas.map((opt) => (
+                        <option key={opt.id} value={opt.label} />
+                      ))}
+                    </datalist>
+                  </div>
                 ) : (
                   <input style={styles.input} disabled placeholder="Técnico não obrigatório para este tipo" />
                 )}

@@ -416,6 +416,7 @@ export default function App() {
   const [pagina, setPagina] = useState("dashboard");
   const [dashboardAbaAtiva, setDashboardAbaAtiva] = useState("criticos");
   const [dashboardModo, setDashboardModo] = useState("resumo");
+  const [dashboardFiltroCc, setDashboardFiltroCc] = useState("");
   const [carregando, setCarregando] = useState(true);
   const [carregandoMovimentacoes, setCarregandoMovimentacoes] = useState(true);
 
@@ -782,6 +783,17 @@ export default function App() {
       .sort((a, b) => a.tecnicoNome.localeCompare(b.tecnicoNome, "pt-BR"));
   }, [saldoTecnicoItem, tecnicosById, itensById, usuarioAtual]);
 
+  const ccsDisponiveisDashboard = useMemo(
+    () => CCS.filter((cc) => roleCanViewCC(usuarioAtual, cc)),
+    [usuarioAtual]
+  );
+
+  useEffect(() => {
+    if (dashboardFiltroCc && !ccsDisponiveisDashboard.includes(dashboardFiltroCc)) {
+      setDashboardFiltroCc("");
+    }
+  }, [dashboardFiltroCc, ccsDisponiveisDashboard]);
+
   const estoqueGeral = useMemo(() => {
   const mapa = {};
 
@@ -848,9 +860,14 @@ export default function App() {
 }, [saldoEstoqueCCItem, saldoTecnicoItem, itensById, tecnicosById]);
 
   const indicadoresDashboard = useMemo(() => {
+    const ccFiltroAtivo = String(dashboardFiltroCc || "").trim();
+    const matchFiltroCc = (cc) => !ccFiltroAtivo || cc === ccFiltroAtivo;
+    const ccsDashboard = ccsDisponiveisDashboard.filter((cc) => matchFiltroCc(cc));
+
     const itensCriticos = estoqueGeral.filter(
       (registro) =>
         roleCanViewCC(usuarioAtual, registro.cc) &&
+        matchFiltroCc(registro.cc) &&
         registro.minimo > 0 &&
         Number(registro.estoque || 0) < Number(registro.minimo || 0)
     );
@@ -862,6 +879,7 @@ export default function App() {
       const item = itensById[Number(mov.item_id)];
       const cc = mov.cc || "";
       if (!roleCanViewCC(usuarioAtual, cc)) return;
+      if (!matchFiltroCc(cc)) return;
       const chave = String(mov.item_id);
       if (!substituicoes[chave]) {
         substituicoes[chave] = {
@@ -918,7 +936,7 @@ export default function App() {
         estoqueGeral.forEach((r) => {
           estoqueAlmoxarifadoPorCcItem[`${r.cc}-${Number(r.itemId)}`] = Number(r.estoque || 0);
         });
-        return CCS.filter((cc) => roleCanViewCC(usuarioAtual, cc)).reduce((sumCc, cc) => {
+        return ccsDashboard.reduce((sumCc, cc) => {
           const kitsPorItem = itensComKit.map((item) => {
             const qtd = Number(item.qtdKitMdu ?? 0);
             const est = estoqueAlmoxarifadoPorCcItem[`${cc}-${Number(item.id)}`] ?? 0;
@@ -934,7 +952,7 @@ export default function App() {
         estoqueGeral.forEach((r) => {
           estoqueAlmoxarifadoPorCcItem[`${r.cc}-${Number(r.itemId)}`] = Number(r.estoque || 0);
         });
-        return CCS.filter((cc) => roleCanViewCC(usuarioAtual, cc)).reduce((sumCc, cc) => {
+        return ccsDashboard.reduce((sumCc, cc) => {
           const kitsPorItem = itensComKit.map((item) => {
             const qtd = Number(item.qtdKitInst ?? 0);
             const est = estoqueAlmoxarifadoPorCcItem[`${cc}-${Number(item.id)}`] ?? 0;
@@ -953,19 +971,31 @@ export default function App() {
         if (qtd <= 0) return acc;
         return acc + Number(item.valor || 0) * qtd;
       }, 0),
-      totalTecnicos: tecnicos.filter((tec) => roleCanViewCC(usuarioAtual, tec.cc)).length,
+      totalTecnicos: tecnicos.filter((tec) => roleCanViewCC(usuarioAtual, tec.cc) && matchFiltroCc(tec.cc)).length,
       totalNoEstoque: estoqueGeral
-        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc) && matchFiltroCc(registro.cc))
         .reduce((acc, item) => acc + Number(item.estoque || 0), 0),
-      totalComTecnicos: estoquePorTecnico.reduce((acc, item) => acc + Number(item.quantidade || 0), 0),
+      totalComTecnicos: estoquePorTecnico
+        .filter((registro) => matchFiltroCc(registro.cc))
+        .reduce((acc, item) => acc + Number(item.quantidade || 0), 0),
       valorTotalNoEstoque: estoqueGeral
-        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc) && matchFiltroCc(registro.cc))
         .reduce((acc, item) => acc + Number(item.estoque || 0) * Number(item.valor || 0), 0),
       valorTotalComTecnicos: estoqueGeral
-        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc) && matchFiltroCc(registro.cc))
         .reduce((acc, item) => acc + Number(item.comTecnico || 0) * Number(item.valor || 0), 0),
     };
-  }, [estoqueGeral, movimentacoes, itens, itensById, tecnicos, estoquePorTecnico, usuarioAtual]);
+  }, [
+    estoqueGeral,
+    movimentacoes,
+    itens,
+    itensById,
+    tecnicos,
+    estoquePorTecnico,
+    usuarioAtual,
+    dashboardFiltroCc,
+    ccsDisponiveisDashboard,
+  ]);
 
   const login = () => {
     if (carregandoUsuarios) {
@@ -2215,6 +2245,25 @@ export default function App() {
               </div>
             ) : (
               <>
+            <div style={{ ...styles.section, marginTop: 0, marginBottom: 16 }}>
+              <div style={styles.formGrid}>
+                <div>
+                  <div style={styles.topbarSub}>Filtrar dashboard por centro de custo</div>
+                  <select
+                    style={styles.input}
+                    value={dashboardFiltroCc}
+                    onChange={(e) => setDashboardFiltroCc(e.target.value)}
+                  >
+                    <option value="">Todos os centros de custo</option>
+                    {ccsDisponiveisDashboard.map((cc) => (
+                      <option key={cc} value={cc}>
+                        {cc}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
             <div style={styles.cardsGrid}>
               <MetricCard titulo="Técnicos cadastrados" valor={indicadoresDashboard.totalTecnicos} iconKey="tecnicos" />
               <MetricCard titulo="Itens no estoque" valor={indicadoresDashboard.totalNoEstoque} iconKey="estoque" />
@@ -2243,7 +2292,7 @@ export default function App() {
                     ? formatMoney(indicadoresDashboard.valorReferenciaKitsMdu)
                     : "Sem permissão"
                 }
-                iconKey="kits"
+                iconKey="money"
               />
               <MetricCard
                 titulo="Valor de referência KIT INST. (cadastro)"
@@ -2252,15 +2301,17 @@ export default function App() {
                     ? formatMoney(indicadoresDashboard.valorReferenciaKitsInst)
                     : "Sem permissão"
                 }
-                iconKey="kits"
+                iconKey="money"
               />
               <MetricCard
                 titulo="Valor total com técnicos"
                 valor={canViewDashboardValues(usuarioAtual) ? formatMoney(indicadoresDashboard.valorTotalComTecnicos) : "Sem permissão"}
+                iconKey="money"
               />
               <MetricCard
                 titulo="Valor total no estoque"
                 valor={canViewDashboardValues(usuarioAtual) ? formatMoney(indicadoresDashboard.valorTotalNoEstoque) : "Sem permissão"}
+                iconKey="money"
               />
             </div>
             {!canViewDashboardValues(usuarioAtual) && (
@@ -3383,6 +3434,14 @@ function DashboardIcon({ iconKey }) {
         <path d="M8.8 5.2a2.2 2.2 0 0 1 3.1 0l1.9 1.9a2.2 2.2 0 0 1 0 3.1L9.7 14.3a2.2 2.2 0 0 1-3.1 0l-1.9-1.9a2.2 2.2 0 0 1 0-3.1Z" />
         <path d="m16.5 5.5 4 4" />
         <path d="m20.5 5.5-4 4" />
+      </svg>
+    );
+  }
+  if (iconKey === "money") {
+    return (
+      <svg {...common}>
+        <path d="M12 4v16" />
+        <path d="M16.3 7.3c-.8-.9-2.4-1.5-4.3-1.5-2.6 0-4.5 1.3-4.5 3.2 0 5 9.1 2.1 9.1 6.4 0 1.8-1.8 3.1-4.6 3.1-1.8 0-3.6-.7-4.5-1.8" />
       </svg>
     );
   }

@@ -37,6 +37,7 @@ const STORAGE_KEY_TRI = "ferramentaria_net_pr_tri_v3";
 const BRAND_LOGO_SRC = "/logo-eqs.png";
 const DEFAULT_USER_PASSWORD = "EQS@123";
 const MAX_INATIVIDADE_MS = 60 * 60 * 1000;
+const MAX_LINHAS_HISTORICO = 25;
 
 const TIPOS_MOV = [
   { value: "entrada", label: "Entrada em estoque" },
@@ -89,6 +90,22 @@ function normalizeSearchText(value) {
 function isHiddenFromUsersScreen(user) {
   const login = String(user?.usuario || "").trim().toLowerCase();
   return login === "admin";
+}
+
+function isRegistroDentroDoPeriodo(dataRegistro, dataInicio, dataFim) {
+  if (!dataRegistro) return false;
+  const registroData = new Date(dataRegistro);
+  if (Number.isNaN(registroData.getTime())) return false;
+
+  if (dataInicio) {
+    const inicio = new Date(`${dataInicio}T00:00:00`);
+    if (registroData < inicio) return false;
+  }
+  if (dataFim) {
+    const fim = new Date(`${dataFim}T23:59:59.999`);
+    if (registroData > fim) return false;
+  }
+  return true;
 }
 
 const ITEM_HEADER_CODIGO = "CODIGO";
@@ -485,10 +502,14 @@ export default function App() {
   const [loteMovimentacoes, setLoteMovimentacoes] = useState([]);
   const [movBuscaItem, setMovBuscaItem] = useState("");
   const [movBuscaTecnico, setMovBuscaTecnico] = useState("");
+  const [movFiltroDataInicio, setMovFiltroDataInicio] = useState("");
+  const [movFiltroDataFim, setMovFiltroDataFim] = useState("");
 
   const [triangulacoes, setTriangulacoes] = useState([]);
   const [triForm, setTriForm] = useState(emptyTriForm);
   const [loteTriangulacoes, setLoteTriangulacoes] = useState([]);
+  const [triFiltroDataInicio, setTriFiltroDataInicio] = useState("");
+  const [triFiltroDataFim, setTriFiltroDataFim] = useState("");
   const [toasts, setToasts] = useState([]);
 
   const notify = useCallback((message, variant = "info") => {
@@ -2157,6 +2178,28 @@ export default function App() {
       .slice(0, 80);
   }, [opcoesTecnicoMovimentacao, movBuscaTecnico]);
 
+  const historicoMovimentacoesVisivel = useMemo(() => {
+    const base = movimentacoes
+      .filter((mov) => roleCanViewCC(usuarioAtual, mov.cc))
+      .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+
+    const filtrado = base.filter((mov) =>
+      isRegistroDentroDoPeriodo(mov.created_at, movFiltroDataInicio, movFiltroDataFim)
+    );
+
+    return filtrado.slice(0, MAX_LINHAS_HISTORICO);
+  }, [movimentacoes, usuarioAtual, movFiltroDataInicio, movFiltroDataFim]);
+
+  const triangulacoesVisiveis = useMemo(() => {
+    const base = [...triangulacoes].sort(
+      (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    );
+    const filtrado = base.filter((tri) =>
+      isRegistroDentroDoPeriodo(tri.created_at, triFiltroDataInicio, triFiltroDataFim)
+    );
+    return filtrado.slice(0, MAX_LINHAS_HISTORICO);
+  }, [triangulacoes, triFiltroDataInicio, triFiltroDataFim]);
+
   useEffect(() => {
     setTecnicoEditandoId(null);
   }, [buscaTecnico]);
@@ -3277,6 +3320,23 @@ export default function App() {
                   {!canRequestTriangulacao(usuarioAtual) && (
                     <p style={styles.permissionHint}>Você pode visualizar triangulações, mas não pode solicitar.</p>
                   )}
+                  <div style={styles.sectionMini}>
+                    <div style={styles.formGrid}>
+                      <input
+                        style={styles.input}
+                        type="date"
+                        value={triFiltroDataInicio}
+                        onChange={(e) => setTriFiltroDataInicio(e.target.value)}
+                      />
+                      <input
+                        style={styles.input}
+                        type="date"
+                        value={triFiltroDataFim}
+                        onChange={(e) => setTriFiltroDataFim(e.target.value)}
+                      />
+                    </div>
+                    <p style={styles.mutedText}>Mostrando no máximo {MAX_LINHAS_HISTORICO} triangulações.</p>
+                  </div>
                   <div style={styles.tableWrap}>
                     <table style={styles.table}>
                       <thead>
@@ -3332,10 +3392,10 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {triangulacoes.length === 0 ? (
+                        {triangulacoesVisiveis.length === 0 ? (
                           <tr><td style={styles.td} colSpan={10}>Nenhuma triangulação solicitada.</td></tr>
                         ) : (
-                          triangulacoes.map((tri) => {
+                          triangulacoesVisiveis.map((tri) => {
                             const item = itensById[Number(tri.item_id)];
                             const podeAprovar = tri.status === "Pendente" && roleCanApproveTriangulacao(usuarioAtual, tri.cc_origem, tri.cc_destino);
                             return (
@@ -3373,6 +3433,23 @@ export default function App() {
 
             <div style={styles.section}>
               <h3 style={styles.sectionTitle}>Histórico de movimentações</h3>
+              <div style={styles.sectionMini}>
+                <div style={styles.formGrid}>
+                  <input
+                    style={styles.input}
+                    type="date"
+                    value={movFiltroDataInicio}
+                    onChange={(e) => setMovFiltroDataInicio(e.target.value)}
+                  />
+                  <input
+                    style={styles.input}
+                    type="date"
+                    value={movFiltroDataFim}
+                    onChange={(e) => setMovFiltroDataFim(e.target.value)}
+                  />
+                </div>
+                <p style={styles.mutedText}>Mostrando no máximo {MAX_LINHAS_HISTORICO} movimentações.</p>
+              </div>
               <div style={styles.tableWrap}>
                 <table style={styles.table}>
                   <thead>
@@ -3388,12 +3465,10 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {movimentacoes.filter((mov) => roleCanViewCC(usuarioAtual, mov.cc)).length === 0 ? (
+                    {historicoMovimentacoesVisivel.length === 0 ? (
                       <tr><td style={styles.td} colSpan={8}>Nenhuma movimentação cadastrada.</td></tr>
                     ) : (
-                      movimentacoes
-                        .filter((mov) => roleCanViewCC(usuarioAtual, mov.cc))
-                        .map((mov) => {
+                      historicoMovimentacoesVisivel.map((mov) => {
                           const item = itensById[Number(mov.item_id)];
                           const tecnico = tecnicosById[Number(mov.tecnico_id)];
                           return (

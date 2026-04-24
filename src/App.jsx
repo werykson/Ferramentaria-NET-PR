@@ -458,6 +458,7 @@ export default function App() {
   const [confirmarSenhaObrigatoria, setConfirmarSenhaObrigatoria] = useState("");
   const [pagina, setPagina] = useState("dashboard");
   const [dashboardAbaAtiva, setDashboardAbaAtiva] = useState("criticos");
+  const [movimentacoesAbaAtiva, setMovimentacoesAbaAtiva] = useState("lancar");
   const [dashboardModo, setDashboardModo] = useState("resumo");
   const [dashboardFiltroCc, setDashboardFiltroCc] = useState("");
   const [carregando, setCarregando] = useState(true);
@@ -482,6 +483,7 @@ export default function App() {
 
   const [triangulacoes, setTriangulacoes] = useState([]);
   const [triForm, setTriForm] = useState(emptyTriForm);
+  const [loteTriangulacoes, setLoteTriangulacoes] = useState([]);
   const [toasts, setToasts] = useState([]);
 
   const notify = useCallback((message, variant = "info") => {
@@ -1600,6 +1602,54 @@ export default function App() {
     setLoteMovimentacoes((prev) => prev.filter((item) => item.localId !== localId));
   };
 
+  const limparLoteMovimentacoes = () => {
+    setLoteMovimentacoes([]);
+  };
+
+  const validarLinhaTriangulacao = (linha) => {
+    if (!canRequestTriangulacao(usuarioAtual)) {
+      return "Seu usuário não possui permissão para solicitar triangulação.";
+    }
+    if (!linha.cc_origem || !linha.cc_destino || !linha.item_id || !linha.quantidade) {
+      return "Preencha origem, destino, item e quantidade.";
+    }
+    if (linha.cc_origem === linha.cc_destino) {
+      return "Origem e destino não podem ser iguais.";
+    }
+    if (!roleCanManageCC(usuarioAtual, linha.cc_origem)) {
+      return "Seu perfil não pode solicitar triangulação a partir desse CC.";
+    }
+
+    const quantidade = Number(linha.quantidade || 0);
+    const itemId = Number(linha.item_id);
+    const saldoAtual = Number(saldoEstoqueCCItem[`${linha.cc_origem}-${itemId}`] || 0);
+    if (!Number.isFinite(quantidade) || quantidade <= 0) {
+      return "Informe uma quantidade válida.";
+    }
+    if (quantidade > saldoAtual) {
+      return `Saldo insuficiente na origem. Saldo atual: ${saldoAtual}.`;
+    }
+    return null;
+  };
+
+  const adicionarTriangulacaoAoLote = () => {
+    const erro = validarLinhaTriangulacao(triForm);
+    if (erro) {
+      notify(erro, "error");
+      return;
+    }
+    setLoteTriangulacoes((prev) => [...prev, { ...triForm, localId: uid() }]);
+    setTriForm((prev) => ({ ...emptyTriForm(), cc_origem: prev.cc_origem, cc_destino: prev.cc_destino }));
+  };
+
+  const removerTriangulacaoDoLote = (localId) => {
+    setLoteTriangulacoes((prev) => prev.filter((linha) => linha.localId !== localId));
+  };
+
+  const limparLoteTriangulacoes = () => {
+    setLoteTriangulacoes([]);
+  };
+
   const salvarLoteMovimentacoes = async () => {
     if (!loteMovimentacoes.length) {
       notify("Adicione ao menos uma linha no lote antes de salvar.", "error");
@@ -1650,49 +1700,53 @@ export default function App() {
   };
 
   const solicitarTriangulacao = async () => {
-    if (!canRequestTriangulacao(usuarioAtual)) {
-      notify("Seu usuário não possui permissão para solicitar triangulação.", "error");
-      return;
-    }
-    if (!triForm.cc_origem || !triForm.cc_destino || !triForm.item_id || !triForm.quantidade) {
-      notify("Preencha origem, destino, item e quantidade.", "error");
-      return;
-    }
-    if (triForm.cc_origem === triForm.cc_destino) {
-      notify("Origem e destino não podem ser iguais.", "error");
-      return;
-    }
-    if (!roleCanManageCC(usuarioAtual, triForm.cc_origem)) {
-      notify("Seu perfil não pode solicitar triangulação a partir desse CC.", "error");
+    if (!loteTriangulacoes.length) {
+      notify("Adicione ao menos uma triangulação ao lote antes de solicitar.", "error");
       return;
     }
 
-    const quantidade = Number(triForm.quantidade || 0);
-    const itemId = Number(triForm.item_id);
-    const saldoAtual = Number(saldoEstoqueCCItem[`${triForm.cc_origem}-${itemId}`] || 0);
-    if (quantidade <= 0) {
-      notify("Informe uma quantidade válida.", "error");
-      return;
-    }
-    if (quantidade > saldoAtual) {
-      notify(`Saldo insuficiente na origem. Saldo atual: ${saldoAtual}.`, "error");
+    const erros = loteTriangulacoes
+      .map((linha) => validarLinhaTriangulacao(linha))
+      .filter(Boolean);
+    if (erros.length) {
+      notify(erros[0], "error");
       return;
     }
 
-    const registro = {
+    const totaisOrigemItem = {};
+    loteTriangulacoes.forEach((linha) => {
+      const chave = `${linha.cc_origem}-${Number(linha.item_id)}`;
+      totaisOrigemItem[chave] = Number(totaisOrigemItem[chave] || 0) + Number(linha.quantidade || 0);
+    });
+    const conflitoSaldo = Object.entries(totaisOrigemItem).find(([chave, qtdSolicitada]) => {
+      const saldoAtual = Number(saldoEstoqueCCItem[chave] || 0);
+      return Number(qtdSolicitada) > saldoAtual;
+    });
+    if (conflitoSaldo) {
+      const [chave, qtdSolicitada] = conflitoSaldo;
+      const saldoAtual = Number(saldoEstoqueCCItem[chave] || 0);
+      notify(
+        `Saldo insuficiente para o lote em ${chave.replace("-", " / ")}. Solicitado: ${qtdSolicitada}. Saldo atual: ${saldoAtual}.`,
+        "error"
+      );
+      return;
+    }
+
+    const agoraIso = new Date().toISOString();
+    const registros = loteTriangulacoes.map((linha) => ({
       id: uid(),
-      cc_origem: triForm.cc_origem,
-      cc_destino: triForm.cc_destino,
-      item_id: itemId,
-      quantidade,
-      observacao: triForm.observacao.trim(),
+      cc_origem: linha.cc_origem,
+      cc_destino: linha.cc_destino,
+      item_id: Number(linha.item_id),
+      quantidade: Number(linha.quantidade || 0),
+      observacao: String(linha.observacao || "").trim(),
       solicitado_por: usuarioAtual?.usuario || "-",
       solicitado_nome: usuarioAtual?.nome || "-",
       status: "Pendente",
-      created_at: new Date().toISOString(),
-    };
+      created_at: agoraIso,
+    }));
 
-    const { error } = await supabase.from("triangulacoes").insert([triRegistroToDbRow(registro)]);
+    const { error } = await supabase.from("triangulacoes").insert(registros.map((registro) => triRegistroToDbRow(registro)));
     if (error) {
       console.error(error);
       captureException(error, { op: "solicitarTriangulacao" });
@@ -1700,8 +1754,9 @@ export default function App() {
       return;
     }
     setTriForm(emptyTriForm());
+    setLoteTriangulacoes([]);
     await buscarTriangulacoes();
-    notify("Triangulação solicitada. Aguarde aprovação para movimentar o estoque.", "success");
+    notify("Triangulações solicitadas com sucesso. Aguarde aprovação para movimentar o estoque.", "success");
   };
 
   const aprovarTriangulacao = async (tri) => {
@@ -2985,6 +3040,31 @@ export default function App() {
         {!carregando && pagina === "movimentacoes" && (
           <>
             <div style={styles.section}>
+              <div style={styles.dashboardTabsRow}>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.dashboardTabButton,
+                    ...(movimentacoesAbaAtiva === "lancar" ? styles.dashboardTabButtonActive : {}),
+                  }}
+                  onClick={() => setMovimentacoesAbaAtiva("lancar")}
+                >
+                  Lançar movimentações
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.dashboardTabButton,
+                    ...(movimentacoesAbaAtiva === "triangulacao" ? styles.dashboardTabButtonActive : {}),
+                  }}
+                  onClick={() => setMovimentacoesAbaAtiva("triangulacao")}
+                >
+                  Triangulação entre centros de custo
+                </button>
+              </div>
+            </div>
+            {movimentacoesAbaAtiva === "lancar" && (
+            <div style={styles.section}>
               <h3 style={styles.sectionTitle}>Lançar movimentações</h3>
               <div style={styles.formGrid}>
                 <select
@@ -3059,6 +3139,13 @@ export default function App() {
               <div style={styles.actionRow}>
                 <button style={styles.primaryButtonInline} onClick={adicionarAoLote}>Adicionar ao lote</button>
                 <button style={styles.secondaryButtonInline} onClick={salvarLoteMovimentacoes}>Salvar lote</button>
+                <button
+                  style={styles.deleteButton}
+                  onClick={limparLoteMovimentacoes}
+                  disabled={loteMovimentacoes.length === 0}
+                >
+                  Limpar lote
+                </button>
               </div>
 
               <div style={styles.tableWrap}>
@@ -3098,6 +3185,8 @@ export default function App() {
                 </table>
               </div>
             </div>
+            )}
+            {movimentacoesAbaAtiva === "triangulacao" && (
             <div style={styles.section}>
               <h3 style={styles.sectionTitle}>Triangulação entre centros de custo</h3>
               {!canUseTriangulacao(usuarioAtual) ? (
@@ -3148,19 +3237,75 @@ export default function App() {
                       onChange={(e) => setTriForm({ ...triForm, observacao: e.target.value })}
                     />
                   </div>
-                  <button
-                    style={{
-                      ...styles.primaryButtonInline,
-                      ...(!canRequestTriangulacao(usuarioAtual) ? styles.disabledButton : {}),
-                    }}
-                    onClick={solicitarTriangulacao}
-                    disabled={!canRequestTriangulacao(usuarioAtual)}
-                  >
-                    Solicitar triangulação
-                  </button>
+                  <div style={styles.actionRow}>
+                    <button
+                      style={{
+                        ...styles.primaryButtonInline,
+                        ...(!canRequestTriangulacao(usuarioAtual) ? styles.disabledButton : {}),
+                      }}
+                      onClick={adicionarTriangulacaoAoLote}
+                      disabled={!canRequestTriangulacao(usuarioAtual)}
+                    >
+                      Adicionar ao lote
+                    </button>
+                    <button
+                      style={{
+                        ...styles.secondaryButtonInline,
+                        ...(!canRequestTriangulacao(usuarioAtual) ? styles.disabledButton : {}),
+                      }}
+                      onClick={solicitarTriangulacao}
+                      disabled={!canRequestTriangulacao(usuarioAtual)}
+                    >
+                      Solicitar lote
+                    </button>
+                    <button
+                      style={styles.deleteButton}
+                      onClick={limparLoteTriangulacoes}
+                      disabled={loteTriangulacoes.length === 0}
+                    >
+                      Limpar lote
+                    </button>
+                  </div>
                   {!canRequestTriangulacao(usuarioAtual) && (
                     <p style={styles.permissionHint}>Você pode visualizar triangulações, mas não pode solicitar.</p>
                   )}
+                  <div style={styles.tableWrap}>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>Origem</th>
+                          <th style={styles.th}>Destino</th>
+                          <th style={styles.th}>Item</th>
+                          <th style={styles.th}>Qtd</th>
+                          <th style={styles.th}>Observação</th>
+                          <th style={styles.th}>Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {loteTriangulacoes.length === 0 ? (
+                          <tr><td style={styles.td} colSpan={6}>Nenhuma linha adicionada ao lote.</td></tr>
+                        ) : (
+                          loteTriangulacoes.map((linha) => {
+                            const item = itensById[Number(linha.item_id)];
+                            return (
+                              <tr key={linha.localId}>
+                                <td style={styles.td}>{linha.cc_origem}</td>
+                                <td style={styles.td}>{linha.cc_destino}</td>
+                                <td style={styles.td}>{item?.nome || "-"}</td>
+                                <td style={styles.td}>{linha.quantidade}</td>
+                                <td style={styles.td}>{linha.observacao || "-"}</td>
+                                <td style={styles.td}>
+                                  <button style={styles.deleteButton} onClick={() => removerTriangulacaoDoLote(linha.localId)}>
+                                    Remover
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
 
                   <div style={styles.tableWrap}>
                     <table style={styles.table}>
@@ -3216,6 +3361,7 @@ export default function App() {
                 </>
               )}
             </div>
+            )}
 
             <div style={styles.section}>
               <h3 style={styles.sectionTitle}>Histórico de movimentações</h3>

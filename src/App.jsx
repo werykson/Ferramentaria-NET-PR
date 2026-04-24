@@ -32,9 +32,11 @@ const MENU = [
 ];
 
 const STORAGE_KEY_AUTH = "ferramentaria_net_pr_auth_v3";
+const STORAGE_KEY_AUTH_ACTIVITY = "ferramentaria_net_pr_auth_activity_v1";
 const STORAGE_KEY_TRI = "ferramentaria_net_pr_tri_v3";
 const BRAND_LOGO_SRC = "/logo-eqs.png";
 const DEFAULT_USER_PASSWORD = "EQS@123";
+const MAX_INATIVIDADE_MS = 60 * 60 * 1000;
 
 const TIPOS_MOV = [
   { value: "entrada", label: "Entrada em estoque" },
@@ -74,6 +76,14 @@ function ccToHeaderToken(cc) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9]/g, "_")
     .toUpperCase();
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 const ITEM_HEADER_CODIGO = "CODIGO";
@@ -131,6 +141,14 @@ function safeLocalStorageGet(key, fallback) {
 function safeLocalStorageSet(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // noop
+  }
+}
+
+function safeLocalStorageRemove(key) {
+  try {
+    localStorage.removeItem(key);
   } catch {
     // noop
   }
@@ -472,7 +490,7 @@ export default function App() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4500);
   }, []);
 
-  const [estoqueFiltro, setEstoqueFiltro] = useState({ cc: "", tecnico_id: "", item_id: "" });
+  const [estoqueFiltro, setEstoqueFiltro] = useState({ cc: "", tecnico_id: "", item_id: "", busca_nome: "" });
 
   const [usuarioForm, setUsuarioForm] = useState({
     nome: "",
@@ -737,6 +755,43 @@ export default function App() {
       setUsuarioAtual(atualizado);
       safeLocalStorageSet(STORAGE_KEY_AUTH, atualizado);
     }
+  }, [usuarioAtual]);
+
+  useEffect(() => {
+    if (!usuarioAtual) return;
+
+    const marcarAtividade = () => safeLocalStorageSet(STORAGE_KEY_AUTH_ACTIVITY, Date.now());
+    const ultimaAtividade = Number(safeLocalStorageGet(STORAGE_KEY_AUTH_ACTIVITY, 0));
+    if (!ultimaAtividade) marcarAtividade();
+
+    const eventosAtividade = [
+      "mousedown",
+      "mousemove",
+      "keydown",
+      "scroll",
+      "touchstart",
+      "click",
+    ];
+
+    eventosAtividade.forEach((evento) => {
+      window.addEventListener(evento, marcarAtividade, { passive: true });
+    });
+
+    const timerVerificacao = setInterval(() => {
+      const ultimoRegistro = Number(safeLocalStorageGet(STORAGE_KEY_AUTH_ACTIVITY, 0));
+      if (!ultimoRegistro) return;
+      if (Date.now() - ultimoRegistro > MAX_INATIVIDADE_MS) {
+        alert("Sessão encerrada por inatividade (mais de 1 hora). Faça login novamente.");
+        sair();
+      }
+    }, 30000);
+
+    return () => {
+      clearInterval(timerVerificacao);
+      eventosAtividade.forEach((evento) => {
+        window.removeEventListener(evento, marcarAtividade);
+      });
+    };
   }, [usuarioAtual]);
 
   const itensById = useMemo(
@@ -1034,8 +1089,12 @@ export default function App() {
       alert(erroUsuarios);
       return;
     }
+    const loginDigitado = String(usuarioLogin || "").trim().toLowerCase();
     const encontrado = usuariosSistema.find(
-      (u) => u.ativo !== false && u.usuario === usuarioLogin.trim() && u.senha === senhaLogin
+      (u) =>
+        u.ativo !== false &&
+        String(u.usuario || "").trim().toLowerCase() === loginDigitado &&
+        u.senha === senhaLogin
     );
     if (!encontrado) {
       alert("Login inválido.");
@@ -1044,6 +1103,7 @@ export default function App() {
     const usuarioNormalizado = normalizeUser(encontrado);
     setUsuarioAtual(usuarioNormalizado);
     safeLocalStorageSet(STORAGE_KEY_AUTH, usuarioNormalizado);
+    safeLocalStorageSet(STORAGE_KEY_AUTH_ACTIVITY, Date.now());
   };
 
   const sair = () => {
@@ -1053,7 +1113,8 @@ export default function App() {
     setNovaSenhaObrigatoria("");
     setConfirmarSenhaObrigatoria("");
     setPagina("dashboard");
-    localStorage.removeItem(STORAGE_KEY_AUTH);
+    safeLocalStorageRemove(STORAGE_KEY_AUTH);
+    safeLocalStorageRemove(STORAGE_KEY_AUTH_ACTIVITY);
   };
 
   const alterarSenhaObrigatoria = () => {
@@ -2078,6 +2139,7 @@ export default function App() {
 
   const estoqueConsolidadoFiltrado = useMemo(() => {
     const comTecnicoPorChave = {};
+    const termoBusca = normalizeSearchText(estoqueFiltro.busca_nome);
 
     estoquePorTecnico
       .filter((registro) => {
@@ -2131,10 +2193,27 @@ export default function App() {
       consolidadoPorItem[chaveItem].minimo += Number(registro.minimo || 0);
     });
 
-    return Object.values(consolidadoPorItem).sort((a, b) =>
-      a.itemNome.localeCompare(b.itemNome, "pt-BR")
+    const itensElegiveis = itens.filter((item) =>
+      !estoqueFiltro.item_id || Number(item.id) === Number(estoqueFiltro.item_id)
     );
-  }, [estoqueGeral, estoquePorTecnico, estoqueFiltro, usuarioAtual]);
+    itensElegiveis.forEach((item) => {
+      const itemId = Number(item.id);
+      if (!consolidadoPorItem[itemId]) {
+        consolidadoPorItem[itemId] = {
+          itemId,
+          itemNome: item.nome,
+          estoque: 0,
+          comTecnico: 0,
+          total: 0,
+          minimo: 0,
+        };
+      }
+    });
+
+    return Object.values(consolidadoPorItem)
+      .filter((registro) => !termoBusca || normalizeSearchText(registro.itemNome).includes(termoBusca))
+      .sort((a, b) => a.itemNome.localeCompare(b.itemNome, "pt-BR"));
+  }, [estoqueGeral, estoquePorTecnico, estoqueFiltro, usuarioAtual, itens]);
 
   if (!usuarioAtual) {
     return (
@@ -3195,7 +3274,7 @@ export default function App() {
               </div>
             </div>
             <p style={styles.mutedText}>
-              Visualize em uma única tabela os totais por item e CC. Use os filtros para refinar por centro de custo, técnico e item.
+              Visualize em uma única tabela os totais por item e CC. Use os filtros para refinar por centro de custo, técnico, item e nome.
             </p>
             <div style={styles.formGrid}>
               <select style={styles.input} value={estoqueFiltro.cc} onChange={(e) => setEstoqueFiltro({ ...estoqueFiltro, cc: e.target.value, tecnico_id: "" })}>
@@ -3210,6 +3289,12 @@ export default function App() {
                 <option value="">Filtrar por item</option>
                 {itens.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
               </select>
+              <input
+                style={styles.input}
+                placeholder="Pesquisar item por nome"
+                value={estoqueFiltro.busca_nome}
+                onChange={(e) => setEstoqueFiltro({ ...estoqueFiltro, busca_nome: e.target.value })}
+              />
             </div>
             <div style={styles.tableWrap}>
               <table style={styles.table}>

@@ -2703,7 +2703,7 @@ export default function App() {
                 <div style={styles.sectionHeaderLine}>
                   <h3 style={styles.sectionTitle}>Itens críticos abaixo do mínimo</h3>
                   <button type="button" style={styles.secondaryButtonInline} onClick={() => setDashboardModo("resumo")}>
-                    Voltar ao dashboard
+                    Voltar ao Dashboard
                   </button>
                 </div>
                 <p style={styles.mutedText}>
@@ -2741,15 +2741,15 @@ export default function App() {
                 <div style={styles.sectionHeaderLine}>
                   <h3 style={styles.sectionTitle}>
                     {dashboardModo === "kit-mdu-detalhe"
-                      ? "Itens faltantes para completar KIT MDU"
+                      ? "Itens faltantes para completar Kit MDU"
                       : dashboardModo === "kit-hfc-detalhe"
-                        ? "Itens faltantes para completar KIT HFC"
+                        ? "Itens faltantes para completar Kit HFC"
                         : dashboardModo === "kit-gpon-detalhe"
-                          ? "Itens faltantes para completar KIT GPON"
-                      : "Itens faltantes para completar KIT INST."}
+                          ? "Itens faltantes para completar Kit GPON"
+                      : "Itens faltantes para completar Kit Completo"}
                   </h3>
                   <button type="button" style={styles.secondaryButtonInline} onClick={() => setDashboardModo("resumo")}>
-                    Voltar ao dashboard
+                    Voltar ao Dashboard
                   </button>
                 </div>
                 <p style={styles.mutedText}>
@@ -2794,7 +2794,7 @@ export default function App() {
             <div style={{ ...styles.section, marginTop: 0, marginBottom: 16 }}>
               <div style={styles.formGrid}>
                 <div>
-                  <div style={styles.topbarSub}>Filtrar dashboard por centro de custo</div>
+                  <div style={styles.topbarSub}>Filtrar Dashboard por centro de custo</div>
                   <select
                     style={styles.input}
                     value={dashboardFiltroCc}
@@ -2832,7 +2832,7 @@ export default function App() {
                 onOpenMdu={() => setDashboardModo("kit-mdu-detalhe")}
               />
               <MetricCard
-                titulo="Valor de referência KIT MDU (cadastro)"
+                titulo="Valor de referência do Kit MDU"
                 valor={
                   canViewDashboardValues(usuarioAtual)
                     ? formatMoney(indicadoresDashboard.valorReferenciaKitsMdu)
@@ -2841,7 +2841,7 @@ export default function App() {
                 iconKey="money"
               />
               <MetricCard
-                titulo="Valor de referência KIT INST. (cadastro)"
+                titulo="Valor de referência do Kit Completo"
                 valor={
                   canViewDashboardValues(usuarioAtual)
                     ? formatMoney(indicadoresDashboard.valorReferenciaKitsInst)
@@ -2862,7 +2862,7 @@ export default function App() {
             </div>
             {!canViewDashboardValues(usuarioAtual) && (
               <p style={{ ...styles.mutedText, marginTop: 10 }}>
-                Seu usuário não possui permissão para visualizar valores financeiros no dashboard.
+                Seu usuário não possui permissão para visualizar valores financeiros no Dashboard.
               </p>
             )}
 
@@ -3031,14 +3031,14 @@ export default function App() {
                   <input
                     style={styles.input}
                     type="number"
-                    placeholder="Qtd no KIT MDU (0 = não entra)"
+                    placeholder="Qtd no kit MDU (0 = não entra)"
                     value={itemForm.qtdKitMdu}
                     onChange={(e) => setItemForm({ ...itemForm, qtdKitMdu: e.target.value })}
                   />
                   <input
                     style={styles.input}
                     type="number"
-                    placeholder="Qtd no KIT INST. (0 = não entra)"
+                    placeholder="Qtd no kit completo (0 = não entra)"
                     value={itemForm.qtdKitInst}
                     onChange={(e) => setItemForm({ ...itemForm, qtdKitInst: e.target.value })}
                   />
@@ -3108,8 +3108,8 @@ export default function App() {
                     <th style={styles.th}>Código</th>
                     <th style={styles.th}>Nome</th>
                     <th style={styles.th}>Valor</th>
-                    <th style={styles.th}>Qtd KIT MDU</th>
-                    <th style={styles.th}>Qtd KIT INST.</th>
+                    <th style={styles.th}>Qtd kit MDU</th>
+                    <th style={styles.th}>Qtd kit completo</th>
                     <th style={styles.th}>Flags</th>
                     <th style={styles.th}>Mínimos por CC</th>
                     <th style={styles.th}>Ação</th>
@@ -4350,7 +4350,7 @@ function KitsFerramentalCard({ inst, hfc, gpon, mdu, onOpenInst, onOpenHfc, onOp
   return (
     <div style={{ ...styles.card, ...styles.kitsFerramentalCard }}>
       <div style={styles.cardTitleRow}>
-        <div style={styles.cardTitle}>Kits ferramental</div>
+        <div style={styles.cardTitle}>Kits Ferramental</div>
         <span style={styles.cardIcon}><DashboardIcon iconKey="kits" /></span>
       </div>
       <div style={styles.kitRowsWrap}>
@@ -4683,7 +4683,7 @@ const styles = {
   formGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12 },
   tableWrap: { marginTop: 24, overflowX: "auto" },
   table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
-  th: { textAlign: "left", padding: 12, borderBottom: "1px solid #dbe5f1", background: "#f8fafc", color: "#334155", fontSize: 13, letterSpacing: 0.2, textTransform: "uppercase", verticalAlign: "top" },
+  th: { textAlign: "left", padding: 12, borderBottom: "1px solid #dbe5f1", background: "#f8fafc", color: "#334155", fontSize: 13, letterSpacing: 0.2, verticalAlign: "top" },
   td: { padding: 12, borderBottom: "1px solid #e2e8f0", fontSize: 14, color: "#0f172a", verticalAlign: "top" },
   minimosLista: { display: "flex", flexDirection: "column", gap: 4, minWidth: 240 },
   minimoLinha: { fontSize: 12, color: "#334155" },

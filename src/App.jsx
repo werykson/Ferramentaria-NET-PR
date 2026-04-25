@@ -826,8 +826,20 @@ export default function App() {
   useEffect(() => {
     if (!usuarioAtual) return;
 
+    const sessaoExpirada = () => {
+      const ultimoRegistro = Number(safeLocalStorageGet(STORAGE_KEY_AUTH_ACTIVITY, 0));
+      if (!ultimoRegistro) return false;
+      return Date.now() - ultimoRegistro > MAX_INATIVIDADE_MS;
+    };
     const marcarAtividade = () => safeLocalStorageSet(STORAGE_KEY_AUTH_ACTIVITY, Date.now());
     const ultimaAtividade = Number(safeLocalStorageGet(STORAGE_KEY_AUTH_ACTIVITY, 0));
+
+    if (sessaoExpirada()) {
+      alert("Sessão encerrada por inatividade (mais de 1 hora). Faça login novamente.");
+      sair();
+      return;
+    }
+
     if (!ultimaAtividade) marcarAtividade();
 
     const eventosAtividade = [
@@ -844,9 +856,7 @@ export default function App() {
     });
 
     const timerVerificacao = setInterval(() => {
-      const ultimoRegistro = Number(safeLocalStorageGet(STORAGE_KEY_AUTH_ACTIVITY, 0));
-      if (!ultimoRegistro) return;
-      if (Date.now() - ultimoRegistro > MAX_INATIVIDADE_MS) {
+      if (sessaoExpirada()) {
         alert("Sessão encerrada por inatividade (mais de 1 hora). Faça login novamente.");
         sair();
       }

@@ -2663,7 +2663,7 @@ export default function App() {
           </div>
           <div style={styles.sidebarTitle}>FERRAMENTARIA</div>
           <div style={styles.sidebarAccentLine} />
-          <div style={styles.sidebarSubtitle}>CONTROLE ESTOQUE FERRAMENTAS NET PR</div>
+          <div style={styles.sidebarSubtitle}>CONTROLE E ESTOQUE</div>
           <div style={styles.sidebarVersion}>Versão {APP_VERSION}</div>
         </div>
         <div style={styles.userBox}>
@@ -4582,7 +4582,7 @@ const styles = {
   sidebarHeader: { marginBottom: 18, lineHeight: 1.15, display: "flex", flexDirection: "column", gap: 8 },
   sidebarBrandRow: { display: "flex", alignItems: "center", gap: 10 },
   sidebarLogo: { width: 100, height: 44, objectFit: "contain", borderRadius: 8, background: "#ffffff", padding: "4px 6px", boxShadow: "0 8px 20px rgba(0,0,0,0.22)" },
-  sidebarNetPr: { fontSize: 36, fontWeight: 900, letterSpacing: 0.6, color: "#ffffff", lineHeight: 0.95, maxWidth: "100%" },
+  sidebarNetPr: { fontSize: 28, fontWeight: 900, letterSpacing: 0.4, color: "#ffffff", lineHeight: 0.95, maxWidth: "100%" },
   sidebarTitle: {
     fontSize: 24,
     fontWeight: 900,

@@ -2663,7 +2663,7 @@ export default function App() {
           </div>
           <div style={styles.sidebarTitle}>FERRAMENTARIA</div>
           <div style={styles.sidebarAccentLine} />
-          <div style={styles.sidebarSubtitle}>Controle de estoque técnico</div>
+          <div style={styles.sidebarSubtitle}>CONTROLE ESTOQUE FERRAMENTAS NET PR</div>
           <div style={styles.sidebarVersion}>Versão {APP_VERSION}</div>
         </div>
         <div style={styles.userBox}>
@@ -4582,10 +4582,20 @@ const styles = {
   sidebarHeader: { marginBottom: 18, lineHeight: 1.15, display: "flex", flexDirection: "column", gap: 8 },
   sidebarBrandRow: { display: "flex", alignItems: "center", gap: 10 },
   sidebarLogo: { width: 100, height: 44, objectFit: "contain", borderRadius: 8, background: "#ffffff", padding: "4px 6px", boxShadow: "0 8px 20px rgba(0,0,0,0.22)" },
-  sidebarNetPr: { fontSize: 40, fontWeight: 900, letterSpacing: 1, color: "#ffffff", lineHeight: 0.95 },
-  sidebarTitle: { fontSize: 44, fontWeight: 900, letterSpacing: 1, color: "#ffffff", lineHeight: 0.95, textShadow: "0 6px 18px rgba(0,0,0,0.35)" },
+  sidebarNetPr: { fontSize: 36, fontWeight: 900, letterSpacing: 0.6, color: "#ffffff", lineHeight: 0.95, maxWidth: "100%" },
+  sidebarTitle: {
+    fontSize: 24,
+    fontWeight: 900,
+    letterSpacing: 0.8,
+    color: "#ffffff",
+    lineHeight: 1.02,
+    textShadow: "0 6px 18px rgba(0,0,0,0.35)",
+    maxWidth: "100%",
+    overflowWrap: "anywhere",
+    wordBreak: "break-word",
+  },
   sidebarAccentLine: { width: 140, height: 4, borderRadius: 999, background: "linear-gradient(90deg, #dc2626 0%, #ef4444 100%)", boxShadow: "0 4px 12px rgba(220,38,38,0.42)" },
-  sidebarSubtitle: { color: "#e2e8f0", fontSize: 12, fontWeight: 600, letterSpacing: 1.1, textTransform: "uppercase" },
+  sidebarSubtitle: { color: "#e2e8f0", fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", lineHeight: 1.25, maxWidth: "100%" },
   sidebarVersion: { color: "#94a3b8", fontSize: 12, fontWeight: 600 },
   userBox: { background: "rgba(15,23,42,0.78)", borderRadius: 14, padding: 12, marginBottom: 22, border: "1px solid rgba(220,38,38,0.25)" },
   userBoxName: { fontWeight: 700 },

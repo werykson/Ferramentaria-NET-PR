@@ -2376,39 +2376,78 @@ export default function App() {
   const itensCriticosVisiveis = indicadoresDashboard.itensCriticos;
 
   const exportarRelatorioEstoqueExcel = () => {
+    const termoBusca = normalizeSearchText(estoqueFiltro.busca_nome);
+    const tecnicoSelecionadoId = Number(estoqueFiltro.tecnico_id || 0);
+    const tecnicoSelecionado = tecnicoSelecionadoId ? tecnicosById[tecnicoSelecionadoId] : null;
+    const ccSelecionado = String(estoqueFiltro.cc || "").trim();
+    const itemSelecionadoId = Number(estoqueFiltro.item_id || 0);
+
+    if (tecnicoSelecionadoId) {
+      const rowsTecnico = estoquePorTecnico
+        .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+        .filter((registro) => Number(registro.tecnico_id) === tecnicoSelecionadoId)
+        .filter((registro) => !ccSelecionado || registro.cc === ccSelecionado)
+        .filter((registro) => !itemSelecionadoId || Number(registro.item_id) === itemSelecionadoId)
+        .filter((registro) => !termoBusca || normalizeSearchText(registro.itemNome).includes(termoBusca))
+        .map((registro) => ({
+          CC: registro.cc,
+          TECNICO: registro.tecnicoNome,
+          ITEM_ID: Number(registro.item_id),
+          ITEM: registro.itemNome,
+          QTD_COM_TECNICO: Number(registro.quantidade || 0),
+        }))
+        .sort((a, b) => a.ITEM.localeCompare(b.ITEM, "pt-BR"));
+
+      downloadWorkbook(
+        `ESTOQUE_TECNICO_${(tecnicoSelecionado?.nome || tecnicoSelecionadoId)
+          .toString()
+          .replace(/\s+/g, "_")
+          .toUpperCase()}.xlsx`,
+        "Relatorio",
+        rowsTecnico.length ? rowsTecnico : [{ INFO: "Nenhum registro encontrado para os filtros selecionados." }]
+      );
+      return;
+    }
+
+    const comTecnicoPorChave = {};
+    estoquePorTecnico
+      .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
+      .filter((registro) => !ccSelecionado || registro.cc === ccSelecionado)
+      .filter((registro) => !itemSelecionadoId || Number(registro.item_id) === itemSelecionadoId)
+      .forEach((registro) => {
+        const chave = `${registro.cc}-${Number(registro.item_id)}`;
+        comTecnicoPorChave[chave] = Number(comTecnicoPorChave[chave] || 0) + Number(registro.quantidade || 0);
+      });
+
     const consolidadoRows = estoqueGeral
       .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
-      .map((registro) => ({
-        CC: registro.cc,
-        ITEM_ID: Number(registro.itemId),
-        ITEM: registro.itemNome,
-        NO_ESTOQUE: Number(registro.estoque || 0),
-        COM_TECNICOS: Number(registro.comTecnico || 0),
-        TOTAL: Number(registro.total || 0),
-        MINIMO: Number(registro.minimo || 0),
-      }));
+      .filter((registro) => !ccSelecionado || registro.cc === ccSelecionado)
+      .filter((registro) => !itemSelecionadoId || Number(registro.itemId) === itemSelecionadoId)
+      .map((registro) => {
+        const chave = `${registro.cc}-${Number(registro.itemId)}`;
+        const comTecnicos = Number(comTecnicoPorChave[chave] || 0);
+        return {
+          CC: registro.cc,
+          ITEM_ID: Number(registro.itemId),
+          ITEM: registro.itemNome,
+          NO_ESTOQUE: Number(registro.estoque || 0),
+          COM_TECNICOS: comTecnicos,
+          TOTAL: Number(registro.estoque || 0) + comTecnicos,
+          MINIMO: Number(registro.minimo || 0),
+        };
+      })
+      .filter((registro) => !termoBusca || normalizeSearchText(registro.ITEM).includes(termoBusca))
+      .filter((registro) => mostrarItensZerados || Number(registro.TOTAL || 0) > 0)
+      .sort((a, b) => a.ITEM.localeCompare(b.ITEM, "pt-BR"));
 
-    const tecnicoRows = estoquePorTecnico
-      .filter((registro) => roleCanViewCC(usuarioAtual, registro.cc))
-      .map((registro) => ({
-        CC: registro.cc,
-        TECNICO_ID: Number(registro.tecnico_id),
-        TECNICO: registro.tecnicoNome,
-        ITEM_ID: Number(registro.item_id),
-        ITEM: registro.itemNome,
-        QUANTIDADE: Number(registro.quantidade || 0),
-      }));
-
-    downloadWorkbookSheets("relatorio_estoque_completo.xlsx", [
-      {
-        name: "Consolidado_CC_Item",
-        rows: consolidadoRows.length ? consolidadoRows : [{ INFO: "Sem dados para exportar." }],
-      },
-      {
-        name: "Com_Tecnicos",
-        rows: tecnicoRows.length ? tecnicoRows : [{ INFO: "Sem dados para exportar." }],
-      },
-    ]);
+    const nomeArquivo = ccSelecionado
+      ? `ESTOQUE_CC_${ccSelecionado.replace(/\s+/g, "_").toUpperCase()}.xlsx`
+      : "ESTOQUE_GERAL.xlsx";
+    downloadWorkbook(
+      nomeArquivo,
+      "Relatorio",
+      consolidadoRows.length ? consolidadoRows : [{ INFO: "Nenhum registro encontrado para os filtros selecionados." }]
+    );
   };
 
   const estoqueConsolidadoFiltrado = useMemo(() => {
@@ -3840,7 +3879,7 @@ export default function App() {
                   {mostrarItensZerados ? "Ocultar itens zerados" : "Mostrar itens zerados"}
                 </button>
                 <button style={styles.secondaryButtonInline} onClick={exportarRelatorioEstoqueExcel}>
-                  Exportar relatório completo
+                  EXPORTAR RELATÓRIO
                 </button>
               </div>
             </div>

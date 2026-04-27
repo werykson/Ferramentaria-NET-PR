@@ -1251,6 +1251,33 @@ export default function App() {
     return listaBase.filter((registro) => registro.cc === ccFiltroAtivo);
   }, [dashboardModo, dashboardFiltroCc, faltantesPorTipoKit]);
 
+  const valorPorTecnicoVisivel = useMemo(() => {
+    const ccFiltroAtivo = String(dashboardFiltroCc || "").trim();
+    const matchFiltroCc = (cc) => !ccFiltroAtivo || cc === ccFiltroAtivo;
+    const mapa = {};
+
+    estoquePorTecnico
+      .filter((registro) => matchFiltroCc(registro.cc))
+      .forEach((registro) => {
+        const tecnicoId = Number(registro.tecnico_id);
+        const item = itensById[Number(registro.item_id)];
+        const valorUnitario = Number(item?.valor || 0);
+        const valorTotalItem = Number(registro.quantidade || 0) * valorUnitario;
+
+        if (!mapa[tecnicoId]) {
+          mapa[tecnicoId] = {
+            tecnico_id: tecnicoId,
+            tecnicoNome: registro.tecnicoNome || `Técnico #${tecnicoId}`,
+            cc: registro.cc || "-",
+            valorTotal: 0,
+          };
+        }
+        mapa[tecnicoId].valorTotal += valorTotalItem;
+      });
+
+    return Object.values(mapa).sort((a, b) => b.valorTotal - a.valorTotal);
+  }, [estoquePorTecnico, itensById, dashboardFiltroCc]);
+
   const login = () => {
     if (carregandoUsuarios) {
       alert("Aguarde, carregando usuários...");
@@ -2879,6 +2906,47 @@ export default function App() {
                   </table>
                 </div>
               </div>
+            ) : dashboardModo === "valor-tecnicos-detalhe" ? (
+              <div style={styles.section}>
+                <div style={styles.sectionHeaderLine}>
+                  <h3 style={styles.sectionTitle}>Valor por técnico (itens em posse)</h3>
+                  <button type="button" style={styles.secondaryButtonInline} onClick={() => setDashboardModo("resumo")}>
+                    Voltar ao Dashboard
+                  </button>
+                </div>
+                <p style={styles.mutedText}>
+                  Soma do valor dos itens que estão com cada técnico (quantidade em posse x valor unitário do item).
+                </p>
+                {!!dashboardFiltroCc && (
+                  <p style={{ ...styles.mutedText, fontWeight: 600 }}>
+                    Filtro ativo: {dashboardFiltroCc}
+                  </p>
+                )}
+                <div style={styles.tableWrap}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Técnico</th>
+                        <th style={styles.th}>CC</th>
+                        <th style={styles.th}>Valor total com itens</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {valorPorTecnicoVisivel.length === 0 ? (
+                        <tr><td style={styles.td} colSpan={3}>Nenhum valor com técnicos no filtro atual.</td></tr>
+                      ) : (
+                        valorPorTecnicoVisivel.map((registro) => (
+                          <tr key={registro.tecnico_id}>
+                            <td style={styles.td}>{registro.tecnicoNome}</td>
+                            <td style={styles.td}>{registro.cc}</td>
+                            <td style={styles.td}>{formatMoney(registro.valorTotal)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             ) : ["kit-mdu-detalhe", "kit-inst-detalhe", "kit-hfc-detalhe", "kit-gpon-detalhe"].includes(dashboardModo) ? (
               <div style={styles.section}>
                 <div style={styles.sectionHeaderLine}>
@@ -2999,6 +3067,7 @@ export default function App() {
                 titulo="Valor total com técnicos"
                 valor={canViewDashboardValues(usuarioAtual) ? formatMoney(indicadoresDashboard.valorTotalComTecnicos) : "Sem permissão"}
                 iconKey="money"
+                onClick={canViewDashboardValues(usuarioAtual) ? () => setDashboardModo("valor-tecnicos-detalhe") : null}
               />
               <MetricCard
                 titulo="Valor total no estoque"

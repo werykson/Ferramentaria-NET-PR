@@ -39,7 +39,7 @@ const DEFAULT_USER_PASSWORD = "EQS@123";
 const MAX_INATIVIDADE_MS = 60 * 60 * 1000;
 const LIMITE_PADRAO_LISTA = 15;
 const OPCOES_LIMITE_LISTA = [15, 25, 50, 100, "tudo"];
-const APP_VERSION = "1.1.1";
+const APP_VERSION = "1.1.2";
 
 const TIPOS_MOV = [
   { value: "entrada", label: "Entrada em estoque" },
@@ -513,6 +513,9 @@ export default function App() {
   const [movimentacoesAbaAtiva, setMovimentacoesAbaAtiva] = useState("lancar");
   const [dashboardModo, setDashboardModo] = useState("resumo");
   const [dashboardFiltroCc, setDashboardFiltroCc] = useState("");
+  const [dashboardWideLayout, setDashboardWideLayout] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth >= 1360 : true
+  );
   const [carregando, setCarregando] = useState(true);
   const [carregandoMovimentacoes, setCarregandoMovimentacoes] = useState(true);
 
@@ -554,6 +557,14 @@ export default function App() {
 
   const [estoqueFiltro, setEstoqueFiltro] = useState({ cc: "", tecnico_id: "", item_id: "", busca_nome: "" });
   const [mostrarItensZerados, setMostrarItensZerados] = useState(false);
+
+  useEffect(() => {
+    const onResize = () => {
+      setDashboardWideLayout(window.innerWidth >= 1360);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const [usuarioForm, setUsuarioForm] = useState({
     nome: "",
@@ -2942,7 +2953,7 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div style={styles.cardsGrid}>
+            <div style={{ ...styles.cardsGrid, ...(dashboardWideLayout ? styles.cardsGridWide : {}) }}>
               <MetricCard titulo="Técnicos cadastrados" valor={indicadoresDashboard.totalTecnicos} iconKey="tecnicos" />
               <MetricCard titulo="Itens no estoque" valor={indicadoresDashboard.totalNoEstoque} iconKey="estoque" />
               <MetricCard titulo="Itens com técnicos" valor={indicadoresDashboard.totalComTecnicos} iconKey="campo" />
@@ -2962,6 +2973,7 @@ export default function App() {
                 onOpenHfc={() => setDashboardModo("kit-hfc-detalhe")}
                 onOpenGpon={() => setDashboardModo("kit-gpon-detalhe")}
                 onOpenMdu={() => setDashboardModo("kit-mdu-detalhe")}
+                fixedRight={dashboardWideLayout}
               />
               <MetricCard
                 titulo="Valor de referência do Kit MDU"
@@ -2971,6 +2983,7 @@ export default function App() {
                     : "Sem permissão"
                 }
                 iconKey="money"
+                gridArea={dashboardWideLayout ? styles.cardRefMduFixed : null}
               />
               <MetricCard
                 titulo="Valor de referência do Kit Completo"
@@ -2980,6 +2993,7 @@ export default function App() {
                     : "Sem permissão"
                 }
                 iconKey="money"
+                gridArea={dashboardWideLayout ? styles.cardRefCompletoFixed : null}
               />
               <MetricCard
                 titulo="Valor total com técnicos"
@@ -4436,11 +4450,12 @@ function DashboardIcon({ iconKey }) {
   return null;
 }
 
-function MetricCard({ titulo, valor, destaque = false, iconKey = null, onClick = null }) {
+function MetricCard({ titulo, valor, destaque = false, iconKey = null, onClick = null, gridArea = null }) {
   const cardStyle = {
     ...styles.card,
     ...(destaque ? styles.cardHighlight : {}),
     ...(onClick ? styles.cardClickable : {}),
+    ...(gridArea || {}),
   };
   const inner = (
     <>
@@ -4472,7 +4487,7 @@ function MetricCard({ titulo, valor, destaque = false, iconKey = null, onClick =
   return <div style={cardStyle}>{inner}</div>;
 }
 
-function KitsFerramentalCard({ inst, hfc, gpon, mdu, onOpenInst, onOpenHfc, onOpenGpon, onOpenMdu }) {
+function KitsFerramentalCard({ inst, hfc, gpon, mdu, onOpenInst, onOpenHfc, onOpenGpon, onOpenMdu, fixedRight = false }) {
   const rows = [
     { key: "COMPLETO", valor: inst, onClick: onOpenInst },
     { key: "HFC", valor: hfc, onClick: onOpenHfc },
@@ -4480,7 +4495,7 @@ function KitsFerramentalCard({ inst, hfc, gpon, mdu, onOpenInst, onOpenHfc, onOp
     { key: "MDU", valor: mdu, onClick: onOpenMdu },
   ];
   return (
-    <div style={{ ...styles.card, ...styles.kitsFerramentalCard }}>
+    <div style={{ ...styles.card, ...styles.kitsFerramentalCard, ...(fixedRight ? styles.kitsFerramentalCardFixed : {}) }}>
       <div style={styles.cardTitleRow}>
         <div style={styles.cardTitle}>Kits Ferramental</div>
         <span style={styles.cardIcon}><DashboardIcon iconKey="kits" /></span>
@@ -4813,6 +4828,7 @@ const styles = {
   topbarSub: { color: "#64748b", fontSize: 14, marginTop: 6 },
   logoutButton: { padding: "10px 16px", borderRadius: 10, border: 0, background: "#0f172a", color: "#ffffff", cursor: "pointer" },
   cardsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 16 },
+  cardsGridWide: { gridTemplateColumns: "repeat(5, minmax(190px, 1fr))" },
   card: { background: "#ffffff", borderRadius: 18, padding: 20, boxShadow: "0 12px 28px rgba(15,23,42,0.08)", minHeight: 120, border: "1px solid #dbe5f1", transition: "transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease" },
   cardClickable: { cursor: "pointer", outline: "none" },
   cardHighlight: { border: "2px solid #fecaca" },
@@ -4822,6 +4838,9 @@ const styles = {
   cardIconSvg: { width: 22, height: 22, display: "block" },
   cardValueSmall: { marginTop: 12, fontSize: 22, fontWeight: 700, color: "#0f172a", lineHeight: 1.25 },
   kitsFerramentalCard: { minHeight: 220, gridRow: "span 2", alignSelf: "stretch" },
+  kitsFerramentalCardFixed: { gridColumn: "5", gridRow: "1 / span 2" },
+  cardRefMduFixed: { gridColumn: "1" },
+  cardRefCompletoFixed: { gridColumn: "2" },
   kitRowsWrap: { marginTop: 12, display: "grid", gap: 8 },
   kitRowButton: {
     border: "1px solid #cbd5e1",

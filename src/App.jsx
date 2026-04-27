@@ -3406,11 +3406,6 @@ export default function App() {
               <div style={styles.actionRow}>
                 <button style={styles.secondaryButtonInline} onClick={baixarModeloTecnicosExcel}>Baixar modelo</button>
                 <button style={styles.secondaryButtonInline} onClick={exportarTecnicosExcel}>Exportar Excel</button>
-                {usuarioAtual.cargo !== "Sup. Técnico" && (
-                  <button style={styles.secondaryButtonInline} onClick={limparDuplicadosTecnicosDeHoje}>
-                    Limpar duplicados de hoje
-                  </button>
-                )}
                 <label style={styles.fileButton}>
                   Importar Excel
                   <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={importarTecnicosExcel} />

@@ -89,6 +89,41 @@ function normalizeSearchText(value) {
     .trim();
 }
 
+function normalizeCCInput(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, " ")
+    .trim();
+}
+
+function resolveCCAlias(rawValue) {
+  const base = normalizeCCInput(rawValue);
+  if (!base) return "";
+
+  const canonicos = new Map(CCS.map((cc) => [normalizeCCInput(cc), cc]));
+
+  const candidatos = [base];
+  if (!base.startsWith("CC ")) candidatos.push(`CC ${base}`);
+  if (!base.endsWith(" PR")) candidatos.push(`${base} PR`);
+  if (!base.startsWith("CC ") || !base.endsWith(" PR")) candidatos.push(`CC ${base} PR`);
+
+  for (const candidato of candidatos) {
+    const resolvido = canonicos.get(candidato);
+    if (resolvido) return resolvido;
+  }
+
+  const token = normalizeHeaderKey(base);
+  for (const cc of CCS) {
+    const tokenCc = normalizeHeaderKey(cc);
+    const tokenSemPrefixo = tokenCc.replace(/^CCNET/, "").replace(/PR$/, "");
+    if (token === tokenSemPrefixo || token.includes(tokenSemPrefixo)) return cc;
+  }
+
+  return "";
+}
+
 function isHiddenFromUsersScreen(user) {
   const login = String(user?.usuario || "").trim().toLowerCase();
   return login === "admin";
@@ -513,6 +548,7 @@ export default function App() {
   const [movimentacoesAbaAtiva, setMovimentacoesAbaAtiva] = useState("lancar");
   const [dashboardModo, setDashboardModo] = useState("resumo");
   const [dashboardFiltroCc, setDashboardFiltroCc] = useState("");
+  const [dashboardTecnicoSelecionadoId, setDashboardTecnicoSelecionadoId] = useState(null);
   const [dashboardWideLayout, setDashboardWideLayout] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth >= 1360 : true
   );
@@ -1278,6 +1314,43 @@ export default function App() {
     return Object.values(mapa).sort((a, b) => b.valorTotal - a.valorTotal);
   }, [estoquePorTecnico, itensById, dashboardFiltroCc]);
 
+  const valorItensTecnicoSelecionado = useMemo(() => {
+    if (!dashboardTecnicoSelecionadoId) return null;
+    const tecnicoIdSelecionado = Number(dashboardTecnicoSelecionadoId);
+    const ccFiltroAtivo = String(dashboardFiltroCc || "").trim();
+    const matchFiltroCc = (cc) => !ccFiltroAtivo || cc === ccFiltroAtivo;
+
+    const itens = estoquePorTecnico
+      .filter((registro) => Number(registro.tecnico_id) === tecnicoIdSelecionado)
+      .filter((registro) => matchFiltroCc(registro.cc))
+      .map((registro) => {
+        const item = itensById[Number(registro.item_id)];
+        const valorUnitario = Number(item?.valor || 0);
+        const quantidade = Number(registro.quantidade || 0);
+        return {
+          tecnico_id: tecnicoIdSelecionado,
+          tecnicoNome: registro.tecnicoNome || `Técnico #${tecnicoIdSelecionado}`,
+          cc: registro.cc || "-",
+          item_id: Number(registro.item_id),
+          itemNome: registro.itemNome || `Item #${registro.item_id}`,
+          quantidade,
+          valorUnitario,
+          valorTotal: quantidade * valorUnitario,
+        };
+      })
+      .sort((a, b) => b.valorTotal - a.valorTotal);
+
+    if (!itens.length) return null;
+
+    return {
+      tecnicoId: tecnicoIdSelecionado,
+      tecnicoNome: itens[0].tecnicoNome,
+      cc: itens[0].cc,
+      itens,
+      total: itens.reduce((acc, registro) => acc + Number(registro.valorTotal || 0), 0),
+    };
+  }, [dashboardTecnicoSelecionadoId, dashboardFiltroCc, estoquePorTecnico, itensById]);
+
   const login = () => {
     if (carregandoUsuarios) {
       alert("Aguarde, carregando usuários...");
@@ -1569,17 +1642,36 @@ export default function App() {
       for (const row of payload) {
         porCodigo.set(row.codigo, row);
       }
-      const unicos = [...porCodigo.values()];
-      const codigos = unicos.map((r) => r.codigo);
-      const { data: existentes, error: selErr } = await supabase
+      const unicosPorCodigo = [...porCodigo.values()];
+
+      const porNomePlanilha = new Map();
+      unicosPorCodigo.forEach((row) => {
+        porNomePlanilha.set(normalizeSearchText(row.nome), row);
+      });
+      const unicos = [...porNomePlanilha.values()];
+
+      const { data: itensExistentes, error: selErr } = await supabase
         .from("itens")
-        .select("id,codigo")
-        .in("codigo", codigos);
+        .select("id,codigo,nome");
       if (selErr) throw selErr;
-      const idPorCodigo = Object.fromEntries((existentes || []).map((r) => [r.codigo, r.id]));
+
+      const idPorCodigo = Object.fromEntries((itensExistentes || []).map((r) => [r.codigo, r.id]));
+      const nomeExistenteNoBanco = new Set((itensExistentes || []).map((r) => normalizeSearchText(r.nome)));
+
+      const elegiveis = [];
+      let ignoradosNomeExistente = 0;
+      unicos.forEach((row) => {
+        const nomeChave = normalizeSearchText(row.nome);
+        if (nomeExistenteNoBanco.has(nomeChave)) {
+          ignoradosNomeExistente += 1;
+          return;
+        }
+        elegiveis.push(row);
+      });
+
       const inserir = [];
       const atualizar = [];
-      for (const row of unicos) {
+      for (const row of elegiveis) {
         const flags = parseKitFlags(row.kitFlags);
         const minimosComFlags = { ...row.minimos };
         if (flags.length) minimosComFlags.__flagsKit = flags;
@@ -1605,7 +1697,14 @@ export default function App() {
         if (insErr) throw insErr;
       }
       await buscarItens();
-      notify(`${atualizar.length} item(ns) atualizado(s), ${inserir.length} novo(s).`, "success");
+      notify(
+        `${atualizar.length} item(ns) atualizado(s), ${inserir.length} novo(s), ${
+          payload.length - unicosPorCodigo.length
+        } código(s) duplicado(s) na planilha ignorado(s), ${
+          unicosPorCodigo.length - unicos.length
+        } nome(s) duplicado(s) na planilha ignorado(s), ${ignoradosNomeExistente} nome(s) já existente(s) no banco ignorado(s).`,
+        "success"
+      );
     } catch (error) {
       console.error(error);
       captureException(error, { op: "importarItensExcel" });
@@ -1614,15 +1713,16 @@ export default function App() {
   };
 
   const cadastrarTecnico = async () => {
-    if (!roleCanCreateCadastrosTecnicos(usuarioAtual, tecnicoForm.cc)) {
+    const ccResolvido = resolveCCAlias(tecnicoForm.cc);
+    if (!roleCanCreateCadastrosTecnicos(usuarioAtual, ccResolvido)) {
       alert("Seu perfil não pode cadastrar técnicos nesse CC.");
       return;
     }
-    if (!tecnicoForm.nome.trim() || !tecnicoForm.cc) {
+    if (!tecnicoForm.nome.trim() || !ccResolvido) {
       alert("Preencha o nome e o centro de custo.");
       return;
     }
-    const { error } = await supabase.from("tecnicos").insert([{ nome: tecnicoForm.nome.trim(), cc: tecnicoForm.cc }]);
+    const { error } = await supabase.from("tecnicos").insert([{ nome: tecnicoForm.nome.trim(), cc: ccResolvido }]);
     if (error) {
       console.error(error);
       alert("Erro ao salvar técnico.");
@@ -1661,7 +1761,7 @@ export default function App() {
       return;
     }
     const nome = String(tecnicoEdicaoDraft.nome || "").trim();
-    const cc = String(tecnicoEdicaoDraft.cc || "").trim();
+    const cc = resolveCCAlias(String(tecnicoEdicaoDraft.cc || "").trim());
     if (!nome || !cc) {
       alert("Preencha o nome e o centro de custo.");
       return;
@@ -1714,11 +1814,15 @@ export default function App() {
         return;
       }
 
+      let ignoradosCCInvalido = 0;
       const payload = rows
-        .map((row) => ({
-          nome: String(readExcelValue(row, [TECNICO_HEADER_NOME, "nome"])).trim(),
-          cc: String(readExcelValue(row, [TECNICO_HEADER_CC, "cc"])).trim(),
-        }))
+        .map((row) => {
+          const nome = String(readExcelValue(row, [TECNICO_HEADER_NOME, "nome"])).trim();
+          const ccRaw = String(readExcelValue(row, [TECNICO_HEADER_CC, "cc"])).trim();
+          const ccResolvido = resolveCCAlias(ccRaw);
+          if (nome && ccRaw && !ccResolvido) ignoradosCCInvalido += 1;
+          return { nome, cc: ccResolvido };
+        })
         .filter((row) => row.nome && row.cc && roleCanCreateCadastrosTecnicos(usuarioAtual, row.cc));
 
       if (!payload.length) {
@@ -1734,35 +1838,19 @@ export default function App() {
 
       const { data: tecnicosExistentes, error: existentesError } = await supabase
         .from("tecnicos")
-        .select("id,nome,cc");
+        .select("nome");
       if (existentesError) throw existentesError;
 
-      const existentesPorNome = new Map();
-      (tecnicosExistentes || []).forEach((tec) => {
-        const chave = normalizeSearchText(tec.nome);
-        if (!existentesPorNome.has(chave)) existentesPorNome.set(chave, tec);
-      });
-
-      const paraAtualizar = [];
+      const nomesExistentes = new Set((tecnicosExistentes || []).map((tec) => normalizeSearchText(tec.nome)));
       const paraInserir = [];
+      let ignoradosNomeExistente = 0;
       payloadUnico.forEach((row) => {
-        const existente = existentesPorNome.get(normalizeSearchText(row.nome));
-        if (existente) paraAtualizar.push({ id: existente.id, ...row, ccAtual: existente.cc, nomeAtual: existente.nome });
-        else paraInserir.push(row);
+        if (nomesExistentes.has(normalizeSearchText(row.nome))) {
+          ignoradosNomeExistente += 1;
+          return;
+        }
+        paraInserir.push(row);
       });
-
-      let atualizados = 0;
-      for (const row of paraAtualizar) {
-        const alterouNome = String(row.nomeAtual || "").trim() !== row.nome;
-        const alterouCC = String(row.ccAtual || "").trim() !== row.cc;
-        if (!alterouNome && !alterouCC) continue;
-        const { error: upErr } = await supabase
-          .from("tecnicos")
-          .update({ nome: row.nome, cc: row.cc })
-          .eq("id", row.id);
-        if (upErr) throw upErr;
-        atualizados += 1;
-      }
 
       if (paraInserir.length) {
         const { error: insErr } = await supabase.from("tecnicos").insert(paraInserir);
@@ -1771,9 +1859,9 @@ export default function App() {
 
       await buscarTecnicos();
       alert(
-        `Importação concluída: ${paraInserir.length} novo(s), ${atualizados} atualizado(s) e ${
+        `Importação concluída: ${paraInserir.length} novo(s), ${
           payload.length - payloadUnico.length
-        } duplicado(s) na planilha ignorado(s).`
+        } nome(s) duplicado(s) na planilha ignorado(s), ${ignoradosNomeExistente} nome(s) já existente(s) no banco ignorado(s) e ${ignoradosCCInvalido} CC(s) inválido(s) ignorado(s).`
       );
     } catch (error) {
       console.error(error);
@@ -2906,6 +2994,60 @@ export default function App() {
                   </table>
                 </div>
               </div>
+            ) : dashboardModo === "valor-tecnico-itens-detalhe" ? (
+              <div style={styles.section}>
+                <div style={styles.sectionHeaderLine}>
+                  <h3 style={styles.sectionTitle}>
+                    Itens com {valorItensTecnicoSelecionado?.tecnicoNome || "técnico selecionado"}
+                  </h3>
+                  <button
+                    type="button"
+                    style={styles.secondaryButtonInline}
+                    onClick={() => setDashboardModo("valor-tecnicos-detalhe")}
+                  >
+                    Voltar para valor por técnico
+                  </button>
+                </div>
+                {!!dashboardFiltroCc && (
+                  <p style={{ ...styles.mutedText, fontWeight: 600 }}>
+                    Filtro ativo: {dashboardFiltroCc}
+                  </p>
+                )}
+                {valorItensTecnicoSelecionado ? (
+                  <>
+                    <p style={styles.mutedText}>
+                      CC: <strong>{valorItensTecnicoSelecionado.cc}</strong>
+                    </p>
+                    <div style={styles.tableWrap}>
+                      <table style={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={styles.th}>Item</th>
+                            <th style={styles.th}>Quantidade</th>
+                            <th style={styles.th}>Valor unitário</th>
+                            <th style={styles.th}>Valor total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {valorItensTecnicoSelecionado.itens.map((registro) => (
+                            <tr key={`${registro.tecnico_id}-${registro.item_id}`}>
+                              <td style={styles.td}>{registro.itemNome}</td>
+                              <td style={styles.td}>{registro.quantidade}</td>
+                              <td style={styles.td}>{formatMoney(registro.valorUnitario)}</td>
+                              <td style={styles.td}>{formatMoney(registro.valorTotal)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ ...styles.sectionMini, marginBottom: 0 }}>
+                      <strong>Total com itens: {formatMoney(valorItensTecnicoSelecionado.total)}</strong>
+                    </div>
+                  </>
+                ) : (
+                  <p style={styles.mutedText}>Nenhum item em posse para o técnico selecionado no filtro atual.</p>
+                )}
+              </div>
             ) : dashboardModo === "valor-tecnicos-detalhe" ? (
               <div style={styles.section}>
                 <div style={styles.sectionHeaderLine}>
@@ -2936,8 +3078,15 @@ export default function App() {
                         <tr><td style={styles.td} colSpan={3}>Nenhum valor com técnicos no filtro atual.</td></tr>
                       ) : (
                         valorPorTecnicoVisivel.map((registro) => (
-                          <tr key={registro.tecnico_id}>
-                            <td style={styles.td}>{registro.tecnicoNome}</td>
+                          <tr
+                            key={registro.tecnico_id}
+                            style={styles.rowClickable}
+                            onClick={() => {
+                              setDashboardTecnicoSelecionadoId(registro.tecnico_id);
+                              setDashboardModo("valor-tecnico-itens-detalhe");
+                            }}
+                          >
+                            <td style={{ ...styles.td, color: "#1d4ed8", fontWeight: 600 }}>{registro.tecnicoNome}</td>
                             <td style={styles.td}>{registro.cc}</td>
                             <td style={styles.td}>{formatMoney(registro.valorTotal)}</td>
                           </tr>
@@ -4978,6 +5127,7 @@ const styles = {
   table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
   th: { textAlign: "left", padding: "11px 12px", borderBottom: "1px solid #dbe5f1", background: "#f8fafc", color: "#334155", fontSize: 13, fontWeight: 700, letterSpacing: 0.2, verticalAlign: "top" },
   td: { padding: "10px 12px", borderBottom: "1px solid #e2e8f0", fontSize: 14, color: "#0f172a", verticalAlign: "top" },
+  rowClickable: { cursor: "pointer" },
   minimosLista: { display: "flex", flexDirection: "column", gap: 4, minWidth: 240 },
   minimoLinha: { fontSize: 12, color: "#334155" },
   warningBox: { background: "#fff7ed", border: "1px solid #fdba74", color: "#9a3412", borderRadius: 12, padding: 12, marginBottom: 16 },

@@ -1743,6 +1743,71 @@ export default function App() {
     }
   };
 
+  const limparDuplicadosTecnicosDeHoje = async () => {
+    if (!confirm("Remover técnicos duplicados criados hoje? As movimentações serão preservadas.")) return;
+
+    try {
+      const agora = new Date();
+      const inicioDiaLocal = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate(), 0, 0, 0, 0);
+      const fimDiaLocal = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() + 1, 0, 0, 0, 0);
+
+      const { data: todosTecnicos, error: tecErr } = await supabase
+        .from("tecnicos")
+        .select("id,nome,cc,created_at")
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true });
+      if (tecErr) throw tecErr;
+
+      const grupos = new Map();
+      (todosTecnicos || []).forEach((tec) => {
+        if (!roleCanCreateCadastrosTecnicos(usuarioAtual, tec.cc)) return;
+        const chave = `${normalizeSearchText(tec.nome)}|${normalizeSearchText(tec.cc)}`;
+        if (!grupos.has(chave)) grupos.set(chave, []);
+        grupos.get(chave).push(tec);
+      });
+
+      const remapeamentos = [];
+      const idsParaExcluir = [];
+
+      grupos.forEach((registros) => {
+        if (registros.length <= 1) return;
+        const keeper = registros[0];
+        const duplicadosCriadosHoje = registros.slice(1).filter((tec) => {
+          if (!tec.created_at) return false;
+          const dataCriacao = new Date(tec.created_at);
+          return dataCriacao >= inicioDiaLocal && dataCriacao < fimDiaLocal;
+        });
+
+        duplicadosCriadosHoje.forEach((dup) => {
+          remapeamentos.push({ from: dup.id, to: keeper.id });
+          idsParaExcluir.push(dup.id);
+        });
+      });
+
+      if (!idsParaExcluir.length) {
+        alert("Não encontrei duplicados criados hoje para remover.");
+        return;
+      }
+
+      for (const map of remapeamentos) {
+        const { error: movErr } = await supabase
+          .from("movimentacoes")
+          .update({ tecnico_id: map.to })
+          .eq("tecnico_id", map.from);
+        if (movErr) throw movErr;
+      }
+
+      const { error: delErr } = await supabase.from("tecnicos").delete().in("id", idsParaExcluir);
+      if (delErr) throw delErr;
+
+      await Promise.allSettled([buscarTecnicos(), buscarMovimentacoes()]);
+      alert(`${idsParaExcluir.length} técnico(s) duplicado(s) criado(s) hoje foram removidos com sucesso.`);
+    } catch (error) {
+      console.error(error);
+      alert(getSupabaseErrorMessage(error, "Erro ao limpar duplicados de técnicos."));
+    }
+  };
+
   const validarLinhaMovimentacao = (linha) => {
     if (!linha.tipo || !linha.item_id || !linha.cc || !linha.quantidade) {
       return "Preencha tipo, item, CC e quantidade.";
@@ -3341,6 +3406,11 @@ export default function App() {
               <div style={styles.actionRow}>
                 <button style={styles.secondaryButtonInline} onClick={baixarModeloTecnicosExcel}>Baixar modelo</button>
                 <button style={styles.secondaryButtonInline} onClick={exportarTecnicosExcel}>Exportar Excel</button>
+                {usuarioAtual.cargo !== "Sup. Técnico" && (
+                  <button style={styles.secondaryButtonInline} onClick={limparDuplicadosTecnicosDeHoje}>
+                    Limpar duplicados de hoje
+                  </button>
+                )}
                 <label style={styles.fileButton}>
                   Importar Excel
                   <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={importarTecnicosExcel} />

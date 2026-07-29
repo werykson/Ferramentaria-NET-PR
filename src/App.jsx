@@ -191,6 +191,14 @@ const emptyTriForm = () => ({
   quantidade: "",
   observacao: "",
 });
+const emptyTriTecnicoForm = () => ({
+  tecnico_origem_id: "",
+  tecnico_destino_id: "",
+  item_id: "",
+  cc: "",
+  quantidade: "",
+  observacao: "",
+});
 
 const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
@@ -388,11 +396,51 @@ function parseTransferenciaTecnicoObservacao(observacao) {
   if (!json) return null;
   try {
     const parsed = JSON.parse(json);
-    if (!parsed || !parsed.transfer_id || !parsed.tecnico_id) return null;
-    return parsed;
+    if (!parsed || !parsed.transfer_id) return null;
+    if (parsed.tecnico_origem_id && parsed.tecnico_destino_id) {
+      return { ...parsed, kind: parsed.kind || "entre_tecnicos" };
+    }
+    if (parsed.tecnico_id) {
+      return { ...parsed, kind: parsed.kind || "mudanca_cc" };
+    }
+    return null;
   } catch {
     return null;
   }
+}
+
+function getTransferenciaKind(meta) {
+  if (!meta) return null;
+  if (meta.kind === "entre_tecnicos" || (meta.tecnico_origem_id && meta.tecnico_destino_id)) {
+    return "entre_tecnicos";
+  }
+  if (meta.kind === "mudanca_cc" || meta.tecnico_id) return "mudanca_cc";
+  return null;
+}
+
+function formatTransferenciaTecnicoResumo(meta, tecnicosById = {}) {
+  if (!meta) return null;
+  const kind = getTransferenciaKind(meta);
+  if (kind === "entre_tecnicos") {
+    const origem =
+      meta.tecnico_origem_nome ||
+      tecnicosById[Number(meta.tecnico_origem_id)]?.nome ||
+      `Técnico #${meta.tecnico_origem_id}`;
+    const destino =
+      meta.tecnico_destino_nome ||
+      tecnicosById[Number(meta.tecnico_destino_id)]?.nome ||
+      `Técnico #${meta.tecnico_destino_id}`;
+    const modo = meta.modo === "carga_completa" ? "carga completa" : "item";
+    return `Transferência entre técnicos (${modo}): ${origem} → ${destino}`;
+  }
+  if (kind === "mudanca_cc") {
+    const nome =
+      meta.tecnico_nome ||
+      tecnicosById[Number(meta.tecnico_id)]?.nome ||
+      `Técnico #${meta.tecnico_id}`;
+    return `Mudança de CC do técnico: ${nome} (${meta.cc_origem} → ${meta.cc_destino})`;
+  }
+  return null;
 }
 
 function formatMoney(value) {
@@ -658,6 +706,7 @@ export default function App() {
   const [dashboardAbaAtiva, setDashboardAbaAtiva] = useState("criticos");
   const [movimentacoesAbaAtiva, setMovimentacoesAbaAtiva] = useState("lancar");
   const [dashboardModo, setDashboardModo] = useState("resumo");
+  const [dashboardMetaKits, setDashboardMetaKits] = useState(1);
   const [dashboardFiltroCc, setDashboardFiltroCc] = useState("");
   const [dashboardOrdemValorTecnico, setDashboardOrdemValorTecnico] = useState("alfabetica");
   const [dashboardTecnicoSelecionadoId, setDashboardTecnicoSelecionadoId] = useState(null);
@@ -697,6 +746,12 @@ export default function App() {
   const [triangulacoes, setTriangulacoes] = useState([]);
   const [triForm, setTriForm] = useState(emptyTriForm);
   const [loteTriangulacoes, setLoteTriangulacoes] = useState([]);
+  const [triTecnicoModo, setTriTecnicoModo] = useState("item");
+  const [triTecnicoForm, setTriTecnicoForm] = useState(emptyTriTecnicoForm);
+  const [loteTriTecnico, setLoteTriTecnico] = useState([]);
+  const [triTecnicoBuscaOrigem, setTriTecnicoBuscaOrigem] = useState("");
+  const [triTecnicoBuscaDestino, setTriTecnicoBuscaDestino] = useState("");
+  const [triTecnicoBuscaItem, setTriTecnicoBuscaItem] = useState("");
   const [triFiltroDataInicio, setTriFiltroDataInicio] = useState("");
   const [triFiltroDataFim, setTriFiltroDataFim] = useState("");
   const [triLimiteLinhas, setTriLimiteLinhas] = useState(LIMITE_PADRAO_LISTA);
@@ -1493,6 +1548,8 @@ export default function App() {
       estoquePorCcItem[`${registro.cc}-${Number(registro.itemId)}`] = Number(registro.estoque || 0);
     });
 
+    const metaKits = Math.max(1, Math.floor(Number(dashboardMetaKits) || 1));
+
     const buildFaltantes = (qtdField, itemPredicate = null) => {
       const itensDoKit = itens.filter((item) => {
         if (Number(item[qtdField] ?? 0) <= 0) return false;
@@ -1505,15 +1562,18 @@ export default function App() {
           itensDoKit.forEach((item) => {
             const qtdPorKit = Number(item[qtdField] || 0);
             const estoqueAtual = Number(estoquePorCcItem[`${cc}-${Number(item.id)}`] || 0);
-            const faltanteParaUmKit = Math.max(0, qtdPorKit - estoqueAtual);
-            if (faltanteParaUmKit > 0) {
+            const qtdNecessaria = qtdPorKit * metaKits;
+            const faltanteComprar = Math.max(0, qtdNecessaria - estoqueAtual);
+            if (faltanteComprar > 0) {
               faltantes.push({
                 cc,
                 itemId: Number(item.id),
                 itemNome: item.nome || `Item #${item.id}`,
                 qtdPorKit,
+                qtdNecessaria,
                 estoqueAtual,
-                faltanteParaUmKit,
+                faltanteComprar,
+                metaKits,
               });
             }
           });
@@ -1525,15 +1585,18 @@ export default function App() {
             (acc, cc) => acc + Number(estoquePorCcItem[`${cc}-${Number(item.id)}`] || 0),
             0
           );
-          const faltanteParaUmKit = Math.max(0, qtdPorKit - estoqueAtual);
-          if (faltanteParaUmKit > 0) {
+          const qtdNecessaria = qtdPorKit * metaKits;
+          const faltanteComprar = Math.max(0, qtdNecessaria - estoqueAtual);
+          if (faltanteComprar > 0) {
             faltantes.push({
               cc: "Todos os CCs",
               itemId: Number(item.id),
               itemNome: item.nome || `Item #${item.id}`,
               qtdPorKit,
+              qtdNecessaria,
               estoqueAtual,
-              faltanteParaUmKit,
+              faltanteComprar,
+              metaKits,
             });
           }
         });
@@ -1552,7 +1615,7 @@ export default function App() {
       gpon: buildFaltantes("qtdKitInst", (item) => itemHasKitFlag(item, "GPON")),
       mduClassificado: buildFaltantes("qtdKitMdu", (item) => itemHasKitFlag(item, "MDU")),
     };
-  }, [dashboardFiltroCc, ccsDisponiveisDashboard, estoqueGeral, itens]);
+  }, [dashboardFiltroCc, dashboardMetaKits, ccsDisponiveisDashboard, estoqueGeral, itens]);
 
   const faltantesKitVisiveis = useMemo(() => {
     let listaBase = faltantesPorTipoKit.inst;
@@ -2143,6 +2206,7 @@ export default function App() {
       item_id: Number(registro.item_id),
       quantidade: Number(registro.quantidade || 0),
       observacao: buildTransferenciaTecnicoObservacao({
+        kind: "mudanca_cc",
         transfer_id: transferId,
         tecnico_id: Number(tecnico.id),
         tecnico_nome: tecnico.nome || `Técnico #${tecnico.id}`,
@@ -2648,6 +2712,216 @@ export default function App() {
     return null;
   };
 
+  const validarBaseTransferenciaTecnico = (form) => {
+    if (!canRequestTriangulacao(usuarioAtual)) {
+      return "Seu usuário não possui permissão para solicitar transferência entre técnicos.";
+    }
+    if (!form.tecnico_origem_id || !form.tecnico_destino_id) {
+      return "Selecione o técnico de origem e o técnico de destino.";
+    }
+    if (String(form.tecnico_origem_id) === String(form.tecnico_destino_id)) {
+      return "Origem e destino devem ser técnicos diferentes.";
+    }
+    const origem = tecnicosById[Number(form.tecnico_origem_id)];
+    const destino = tecnicosById[Number(form.tecnico_destino_id)];
+    if (!origem || !destino) return "Técnico de origem ou destino inválido.";
+    const ccDestino = resolveCCAlias(destino.cc);
+    if (!ccDestino || !roleCanManageCC(usuarioAtual, ccDestino)) {
+      return "Seu perfil não pode transferir itens para o CC do técnico de destino.";
+    }
+    return null;
+  };
+
+  const validarLinhaTransferenciaTecnico = (linha) => {
+    const erroBase = validarBaseTransferenciaTecnico(linha);
+    if (erroBase) return erroBase;
+    if (!linha.item_id || !linha.cc || !linha.quantidade) {
+      return "Preencha item, CC de origem e quantidade.";
+    }
+    const ccOrigem = resolveCCAlias(linha.cc);
+    if (!ccOrigem || !roleCanManageCC(usuarioAtual, ccOrigem)) {
+      return "Seu perfil não pode transferir itens desse CC de origem.";
+    }
+    const quantidade = Number(linha.quantidade || 0);
+    const itemId = Number(linha.item_id);
+    const tecnicoOrigemId = Number(linha.tecnico_origem_id);
+    if (!Number.isFinite(quantidade) || quantidade <= 0) {
+      return "Informe uma quantidade válida.";
+    }
+    const saldoAtual = Number(saldoTecnicoItem[`${tecnicoOrigemId}|${itemId}|${ccOrigem}`] || 0);
+    if (quantidade > saldoAtual) {
+      return `Saldo insuficiente na posse do técnico de origem. Saldo atual: ${saldoAtual}.`;
+    }
+    return null;
+  };
+
+  const adicionarTransferenciaTecnicoAoLote = () => {
+    const erro = validarLinhaTransferenciaTecnico(triTecnicoForm);
+    if (erro) {
+      notify(erro, "error");
+      return;
+    }
+    setLoteTriTecnico((prev) => [...prev, { ...triTecnicoForm, localId: uid() }]);
+    setTriTecnicoForm((prev) => ({
+      ...emptyTriTecnicoForm(),
+      tecnico_origem_id: prev.tecnico_origem_id,
+      tecnico_destino_id: prev.tecnico_destino_id,
+    }));
+    setTriTecnicoBuscaItem("");
+  };
+
+  const removerTransferenciaTecnicoDoLote = (localId) => {
+    setLoteTriTecnico((prev) => prev.filter((linha) => linha.localId !== localId));
+  };
+
+  const limparLoteTransferenciaTecnico = () => {
+    setLoteTriTecnico([]);
+  };
+
+  const montarRegistrosTransferenciaTecnico = (linhas, metaBase) => {
+    const destino = tecnicosById[Number(metaBase.tecnico_destino_id)];
+    const ccDestinoPadrao = resolveCCAlias(destino?.cc);
+    const transferId = uid();
+    const meta = {
+      kind: "entre_tecnicos",
+      transfer_id: transferId,
+      tecnico_origem_id: Number(metaBase.tecnico_origem_id),
+      tecnico_destino_id: Number(metaBase.tecnico_destino_id),
+      tecnico_origem_nome:
+        metaBase.tecnico_origem_nome ||
+        tecnicosById[Number(metaBase.tecnico_origem_id)]?.nome ||
+        `Técnico #${metaBase.tecnico_origem_id}`,
+      tecnico_destino_nome:
+        metaBase.tecnico_destino_nome ||
+        tecnicosById[Number(metaBase.tecnico_destino_id)]?.nome ||
+        `Técnico #${metaBase.tecnico_destino_id}`,
+      origem: metaBase.origem || "manual",
+      modo: metaBase.modo || "item",
+    };
+    const obsUsuario = String(metaBase.observacao || "").trim();
+    const observacaoMeta = buildTransferenciaTecnicoObservacao(meta);
+    const agoraIso = new Date().toISOString();
+
+    return linhas.map((linha) => ({
+      id: uid(),
+      cc_origem: resolveCCAlias(linha.cc),
+      cc_destino: ccDestinoPadrao,
+      item_id: Number(linha.item_id),
+      quantidade: Number(linha.quantidade || 0),
+      observacao: obsUsuario ? `${observacaoMeta} | ${obsUsuario}` : observacaoMeta,
+      solicitado_por: usuarioAtual?.usuario || "-",
+      solicitado_nome: usuarioAtual?.nome || "-",
+      status: "Pendente",
+      created_at: agoraIso,
+    }));
+  };
+
+  const solicitarTransferenciaTecnico = async () => {
+    if (triTecnicoModo === "carga_completa") {
+      const erroBase = validarBaseTransferenciaTecnico(triTecnicoForm);
+      if (erroBase) {
+        notify(erroBase, "error");
+        return;
+      }
+      const origemId = Number(triTecnicoForm.tecnico_origem_id);
+      const linhasCarga = estoquePorTecnico
+        .filter((registro) => Number(registro.tecnico_id) === origemId)
+        .filter((registro) => Number(registro.quantidade || 0) > 0)
+        .filter((registro) => roleCanManageCC(usuarioAtual, registro.cc))
+        .map((registro) => ({
+          item_id: Number(registro.item_id),
+          cc: registro.cc,
+          quantidade: Number(registro.quantidade || 0),
+        }));
+      if (!linhasCarga.length) {
+        notify("O técnico de origem não possui itens em posse para transferir.", "error");
+        return;
+      }
+      const confirmou = window.confirm(
+        `Transferir carga completa (${linhasCarga.length} item(ns)) do técnico selecionado para o destino?\n\nA solicitação ficará pendente até aprovação.`
+      );
+      if (!confirmou) return;
+
+      const registros = montarRegistrosTransferenciaTecnico(linhasCarga, {
+        ...triTecnicoForm,
+        origem: "carga_completa",
+        modo: "carga_completa",
+      });
+      const { error } = await supabase
+        .from("triangulacoes")
+        .insert(registros.map((registro) => triRegistroToDbRow(registro)));
+      if (error) {
+        console.error(error);
+        captureException(error, { op: "solicitarTransferenciaTecnico_carga" });
+        notify(getSupabaseErrorMessage(error, "Erro ao solicitar transferência de carga completa."), "error");
+        return;
+      }
+      setTriTecnicoForm(emptyTriTecnicoForm());
+      setTriTecnicoBuscaOrigem("");
+      setTriTecnicoBuscaDestino("");
+      await buscarTriangulacoes();
+      notify(
+        `Transferência de carga completa solicitada (${registros.length} item(ns)). Aguarde aprovação.`,
+        "success"
+      );
+      return;
+    }
+
+    if (!loteTriTecnico.length) {
+      notify("Adicione ao menos um item ao lote antes de solicitar.", "error");
+      return;
+    }
+    const erros = loteTriTecnico.map((linha) => validarLinhaTransferenciaTecnico(linha)).filter(Boolean);
+    if (erros.length) {
+      notify(erros[0], "error");
+      return;
+    }
+
+    const totaisOrigemItem = {};
+    loteTriTecnico.forEach((linha) => {
+      const ccOrigem = resolveCCAlias(linha.cc);
+      const chave = `${linha.tecnico_origem_id}|${Number(linha.item_id)}|${ccOrigem}`;
+      totaisOrigemItem[chave] = Number(totaisOrigemItem[chave] || 0) + Number(linha.quantidade || 0);
+    });
+    const conflitoSaldo = Object.entries(totaisOrigemItem).find(([chave, qtdSolicitada]) => {
+      const saldoAtual = Number(saldoTecnicoItem[chave] || 0);
+      return Number(qtdSolicitada) > saldoAtual;
+    });
+    if (conflitoSaldo) {
+      const [chave, qtdSolicitada] = conflitoSaldo;
+      const saldoAtual = Number(saldoTecnicoItem[chave] || 0);
+      notify(
+        `Saldo insuficiente na posse do técnico para o lote (${chave}). Solicitado: ${qtdSolicitada}. Saldo atual: ${saldoAtual}.`,
+        "error"
+      );
+      return;
+    }
+
+    const registros = montarRegistrosTransferenciaTecnico(loteTriTecnico, {
+      tecnico_origem_id: loteTriTecnico[0].tecnico_origem_id,
+      tecnico_destino_id: loteTriTecnico[0].tecnico_destino_id,
+      observacao: triTecnicoForm.observacao || loteTriTecnico[0].observacao,
+      origem: "manual",
+      modo: "item",
+    });
+    const { error } = await supabase
+      .from("triangulacoes")
+      .insert(registros.map((registro) => triRegistroToDbRow(registro)));
+    if (error) {
+      console.error(error);
+      captureException(error, { op: "solicitarTransferenciaTecnico_lote" });
+      notify(getSupabaseErrorMessage(error, "Erro ao solicitar transferência entre técnicos."), "error");
+      return;
+    }
+    setTriTecnicoForm(emptyTriTecnicoForm());
+    setLoteTriTecnico([]);
+    setTriTecnicoBuscaOrigem("");
+    setTriTecnicoBuscaDestino("");
+    setTriTecnicoBuscaItem("");
+    await buscarTriangulacoes();
+    notify("Transferência entre técnicos solicitada com sucesso. Aguarde aprovação.", "success");
+  };
+
   const adicionarTriangulacaoAoLote = () => {
     const erro = validarLinhaTriangulacao(triForm);
     if (erro) {
@@ -2845,6 +3119,117 @@ export default function App() {
         });
       if (!grupo.length) {
         notify("Solicitação de transferência já foi processada ou não foi encontrada.", "warning");
+        return;
+      }
+
+      const kind = getTransferenciaKind(transferenciaMeta);
+
+      if (kind === "entre_tecnicos") {
+        const tecnicoOrigemId = Number(transferenciaMeta.tecnico_origem_id);
+        const tecnicoDestinoId = Number(transferenciaMeta.tecnico_destino_id);
+        if (!Number.isFinite(tecnicoOrigemId) || !Number.isFinite(tecnicoDestinoId)) {
+          notify("Dados inválidos na solicitação de transferência entre técnicos.", "error");
+          return;
+        }
+
+        const conflitoSaldo = grupo.find((row) => {
+          const itemId = Number(row.item_id);
+          const qtd = Number(row.quantidade || 0);
+          const ccOrigem = resolveCCAlias(row.cc_origem);
+          if (!ccOrigem || !Number.isFinite(itemId) || qtd <= 0) return false;
+          const saldoAtual = Number(saldoTecnicoItem[`${tecnicoOrigemId}|${itemId}|${ccOrigem}`] || 0);
+          return qtd > saldoAtual;
+        });
+        if (conflitoSaldo) {
+          const item = itensById[Number(conflitoSaldo.item_id)];
+          const ccOrigem = resolveCCAlias(conflitoSaldo.cc_origem);
+          const saldoAtual = Number(
+            saldoTecnicoItem[`${tecnicoOrigemId}|${Number(conflitoSaldo.item_id)}|${ccOrigem}`] || 0
+          );
+          notify(
+            `Saldo insuficiente na posse do técnico de origem para ${item?.nome || "item"} (${ccOrigem}). Saldo atual: ${saldoAtual}.`,
+            "error"
+          );
+          return;
+        }
+
+        const resumo = formatTransferenciaTecnicoResumo(transferenciaMeta, tecnicosById) || "Transferência entre técnicos";
+        const payloadMovs = [];
+        grupo.forEach((row) => {
+          const itemId = Number(row.item_id);
+          const qtd = Number(row.quantidade || 0);
+          const ccOrigem = resolveCCAlias(row.cc_origem);
+          const ccDestino = resolveCCAlias(row.cc_destino);
+          if (!Number.isFinite(itemId) || !Number.isFinite(qtd) || qtd <= 0 || !ccOrigem || !ccDestino) return;
+          const obs = `${resumo} aprovada.`;
+          payloadMovs.push({
+            tipo: "devolucao_tecnico",
+            item_id: itemId,
+            tecnico_id: tecnicoOrigemId,
+            cc: ccOrigem,
+            quantidade: qtd,
+            observacao: obs,
+          });
+          if (ccOrigem !== ccDestino) {
+            payloadMovs.push(
+              {
+                tipo: "triangulacao_saida",
+                item_id: itemId,
+                tecnico_id: null,
+                cc: ccOrigem,
+                quantidade: qtd,
+                observacao: obs,
+              },
+              {
+                tipo: "triangulacao_entrada",
+                item_id: itemId,
+                tecnico_id: null,
+                cc: ccDestino,
+                quantidade: qtd,
+                observacao: obs,
+              }
+            );
+          }
+          payloadMovs.push({
+            tipo: "saida_tecnico",
+            item_id: itemId,
+            tecnico_id: tecnicoDestinoId,
+            cc: ccDestino,
+            quantidade: qtd,
+            observacao: obs,
+          });
+        });
+
+        if (!payloadMovs.length) {
+          notify("Não foi possível gerar movimentações para a transferência entre técnicos.", "error");
+          return;
+        }
+
+        const { error: movErr } = await insertMovimentacoesComAutor(payloadMovs, usuarioAtual);
+        if (movErr) {
+          console.error(movErr);
+          captureException(movErr, { op: "aprovarTransferenciaEntreTecnicos_mov" });
+          notify(getSupabaseErrorMessage(movErr, "Erro ao aprovar transferência entre técnicos."), "error");
+          return;
+        }
+
+        const idsGrupo = grupo.map((row) => row.id);
+        const { error: updTriErr } = await supabase
+          .from("triangulacoes")
+          .update({
+            status: "Aprovada",
+            aprovado_por: usuarioAtual?.usuario || "-",
+            aprovado_nome: usuarioAtual?.nome || "-",
+            approved_at: new Date().toISOString(),
+          })
+          .in("id", idsGrupo);
+        if (updTriErr) {
+          console.error(updTriErr);
+          notify("Transferência aplicada, mas houve falha ao atualizar o status das solicitações.", "warning");
+        } else {
+          notify("Transferência entre técnicos aprovada e aplicada com sucesso.", "success");
+        }
+        await Promise.allSettled([buscarTriangulacoes(), buscarMovimentacoesESaldos()]);
         return;
       }
 
@@ -3381,6 +3766,90 @@ export default function App() {
     return opcao?.label || "";
   }, [movForm.tecnico_id, opcoesTecnicoMovimentacao]);
 
+  const opcoesTecnicoTransferencia = useMemo(
+    () =>
+      tecnicosVisiveis
+        .sort((a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt-BR"))
+        .map((tec) => ({
+          id: String(tec.id),
+          label: `${tec.nome} (${tec.cc})`,
+        })),
+    [tecnicosVisiveis]
+  );
+
+  const opcoesTecnicoTransferenciaFiltradasOrigem = useMemo(() => {
+    const termo = String(triTecnicoBuscaOrigem || "").trim().toLowerCase();
+    if (!termo) return opcoesTecnicoTransferencia.slice(0, 80);
+    return opcoesTecnicoTransferencia.filter((opt) => opt.label.toLowerCase().includes(termo)).slice(0, 80);
+  }, [opcoesTecnicoTransferencia, triTecnicoBuscaOrigem]);
+
+  const opcoesTecnicoTransferenciaFiltradasDestino = useMemo(() => {
+    const termo = String(triTecnicoBuscaDestino || "").trim().toLowerCase();
+    if (!termo) return opcoesTecnicoTransferencia.slice(0, 80);
+    return opcoesTecnicoTransferencia.filter((opt) => opt.label.toLowerCase().includes(termo)).slice(0, 80);
+  }, [opcoesTecnicoTransferencia, triTecnicoBuscaDestino]);
+
+  const labelTecnicoOrigemTransferencia = useMemo(() => {
+    if (!triTecnicoForm.tecnico_origem_id) return "";
+    const opcao = opcoesTecnicoTransferencia.find((opt) => String(opt.id) === String(triTecnicoForm.tecnico_origem_id));
+    return opcao?.label || "";
+  }, [triTecnicoForm.tecnico_origem_id, opcoesTecnicoTransferencia]);
+
+  const labelTecnicoDestinoTransferencia = useMemo(() => {
+    if (!triTecnicoForm.tecnico_destino_id) return "";
+    const opcao = opcoesTecnicoTransferencia.find((opt) => String(opt.id) === String(triTecnicoForm.tecnico_destino_id));
+    return opcao?.label || "";
+  }, [triTecnicoForm.tecnico_destino_id, opcoesTecnicoTransferencia]);
+
+  const itensPosseOrigemTransferencia = useMemo(() => {
+    const origemId = Number(triTecnicoForm.tecnico_origem_id);
+    if (!Number.isFinite(origemId) || origemId <= 0) return [];
+    return estoquePorTecnico
+      .filter((registro) => Number(registro.tecnico_id) === origemId)
+      .filter((registro) => Number(registro.quantidade || 0) > 0)
+      .filter((registro) => roleCanManageCC(usuarioAtual, registro.cc))
+      .sort((a, b) => String(a.itemNome).localeCompare(String(b.itemNome), "pt-BR"));
+  }, [triTecnicoForm.tecnico_origem_id, estoquePorTecnico, usuarioAtual]);
+
+  const opcoesItemTransferenciaTecnico = useMemo(
+    () =>
+      [...new Map(itensPosseOrigemTransferencia.map((registro) => [Number(registro.item_id), registro])).values()].map(
+        (registro) => ({
+          id: String(registro.item_id),
+          label: registro.itemNome,
+        })
+      ),
+    [itensPosseOrigemTransferencia]
+  );
+
+  const opcoesItemTransferenciaTecnicoFiltradas = useMemo(() => {
+    const termo = String(triTecnicoBuscaItem || "").trim().toLowerCase();
+    if (!termo) return opcoesItemTransferenciaTecnico.slice(0, 80);
+    return opcoesItemTransferenciaTecnico.filter((opt) => opt.label.toLowerCase().includes(termo)).slice(0, 80);
+  }, [opcoesItemTransferenciaTecnico, triTecnicoBuscaItem]);
+
+  const ccsItemPosseOrigemTransferencia = useMemo(() => {
+    const itemId = Number(triTecnicoForm.item_id);
+    if (!Number.isFinite(itemId) || itemId <= 0) return [];
+    return itensPosseOrigemTransferencia
+      .filter((registro) => Number(registro.item_id) === itemId)
+      .map((registro) => ({
+        cc: registro.cc,
+        quantidade: Number(registro.quantidade || 0),
+      }));
+  }, [triTecnicoForm.item_id, itensPosseOrigemTransferencia]);
+
+  const previewCargaCompletaTransferencia = useMemo(() => {
+    const origemId = Number(triTecnicoForm.tecnico_origem_id);
+    const destino = tecnicosById[Number(triTecnicoForm.tecnico_destino_id)];
+    const ccDestino = resolveCCAlias(destino?.cc);
+    if (!Number.isFinite(origemId) || origemId <= 0 || !ccDestino) return [];
+    return itensPosseOrigemTransferencia.map((registro) => ({
+      ...registro,
+      cc_destino: ccDestino,
+    }));
+  }, [triTecnicoForm.tecnico_origem_id, triTecnicoForm.tecnico_destino_id, itensPosseOrigemTransferencia, tecnicosById]);
+
   const historicoMovimentacoesFiltrado = useMemo(() => {
     const base = movimentacoes
       .filter((mov) => roleCanViewCC(usuarioAtual, mov.cc))
@@ -3422,6 +3891,25 @@ export default function App() {
     const inicio = (triPaginaAtual - 1) * limite;
     return triangulacoesFiltradas.slice(inicio, inicio + limite);
   }, [triangulacoesFiltradas, triLimiteLinhas, triPaginaAtual]);
+
+  const triangulacoesTransferenciaTecnicoFiltradas = useMemo(() => {
+    return triangulacoesFiltradas.filter((tri) => {
+      const meta = parseTransferenciaTecnicoObservacao(tri.observacao);
+      return getTransferenciaKind(meta) === "entre_tecnicos";
+    });
+  }, [triangulacoesFiltradas]);
+
+  const triTotalPaginasTransferenciaTecnico = useMemo(() => {
+    if (triLimiteLinhas === "tudo") return 1;
+    return Math.max(1, Math.ceil(triangulacoesTransferenciaTecnicoFiltradas.length / Number(triLimiteLinhas)));
+  }, [triangulacoesTransferenciaTecnicoFiltradas.length, triLimiteLinhas]);
+
+  const triangulacoesTransferenciaTecnicoVisiveis = useMemo(() => {
+    if (triLimiteLinhas === "tudo") return triangulacoesTransferenciaTecnicoFiltradas;
+    const limite = Number(triLimiteLinhas);
+    const inicio = (triPaginaAtual - 1) * limite;
+    return triangulacoesTransferenciaTecnicoFiltradas.slice(inicio, inicio + limite);
+  }, [triangulacoesTransferenciaTecnicoFiltradas, triLimiteLinhas, triPaginaAtual]);
 
   useEffect(() => {
     setMovPaginaAtual(1);
@@ -4304,19 +4792,50 @@ export default function App() {
                 <div style={styles.sectionHeaderLine}>
                   <h3 style={styles.sectionTitle}>
                     {dashboardModo === "kit-mdu-detalhe"
-                      ? "Itens faltantes para completar Kit MDU"
+                      ? "Compras para Kit MDU"
                       : dashboardModo === "kit-hfc-detalhe"
-                        ? "Itens faltantes para completar Kit HFC"
+                        ? "Compras para Kit HFC"
                         : dashboardModo === "kit-gpon-detalhe"
-                          ? "Itens faltantes para completar Kit GPON"
-                      : "Itens faltantes para completar Kit Completo"}
+                          ? "Compras para Kit GPON"
+                      : "Compras para Kit Completo"}
                   </h3>
                   <button type="button" style={styles.secondaryButtonInline} onClick={() => setDashboardModo("resumo")}>
                     Voltar ao Dashboard
                   </button>
                 </div>
                 <p style={styles.mutedText}>
-                  Lista por centro de custo dos itens que faltam em estoque para montar pelo menos 1 kit completo.
+                  Informe quantos kits você precisa montar. O sistema calcula o que falta comprar com base no estoque
+                  atual do almoxarifado.
+                </p>
+                <div style={{ ...styles.formGrid, maxWidth: 420, marginBottom: 12 }}>
+                  <div>
+                    <div style={styles.topbarSub}>Quantos kits preciso</div>
+                    <input
+                      style={styles.input}
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={dashboardMetaKits}
+                      onChange={(e) => {
+                        const bruto = Number(e.target.value);
+                        if (!Number.isFinite(bruto) || bruto < 1) {
+                          setDashboardMetaKits(1);
+                          return;
+                        }
+                        setDashboardMetaKits(Math.floor(bruto));
+                      }}
+                    />
+                  </div>
+                </div>
+                <p style={{ ...styles.mutedText, fontWeight: 600 }}>
+                  Meta: {Math.max(1, Math.floor(Number(dashboardMetaKits) || 1))} kit(s) | Disponíveis hoje no almoxarifado:{" "}
+                  {dashboardModo === "kit-mdu-detalhe"
+                    ? indicadoresDashboard.totalKitsDisponiveisMdu
+                    : dashboardModo === "kit-hfc-detalhe"
+                      ? indicadoresDashboard.totalKitsDisponiveisHfc
+                      : dashboardModo === "kit-gpon-detalhe"
+                        ? indicadoresDashboard.totalKitsDisponiveisGpon
+                        : indicadoresDashboard.totalKitsDisponiveisInst}
                 </p>
                 {!!dashboardFiltroCc && (
                   <p style={{ ...styles.mutedText, fontWeight: 600 }}>
@@ -4330,21 +4849,27 @@ export default function App() {
                         <th style={styles.th}>CC</th>
                         <th style={styles.th}>Item</th>
                         <th style={styles.th}>Qtd por kit</th>
+                        <th style={styles.th}>Qtd necessária</th>
                         <th style={styles.th}>Estoque atual</th>
                         <th style={styles.th}>Falta comprar</th>
                       </tr>
                     </thead>
                     <tbody>
                       {faltantesKitVisiveis.length === 0 ? (
-                        <tr><td style={styles.td} colSpan={5}>Nenhum item faltante para completar 1 kit no filtro atual.</td></tr>
+                        <tr>
+                          <td style={styles.td} colSpan={6}>
+                            Estoque suficiente para montar {Math.max(1, Math.floor(Number(dashboardMetaKits) || 1))} kit(s) no filtro atual.
+                          </td>
+                        </tr>
                       ) : (
                         faltantesKitVisiveis.map((registro, index) => (
                           <tr key={`${registro.cc}-${registro.itemId}-${index}`}>
                             <td style={styles.td}>{registro.cc}</td>
                             <td style={styles.td}>{registro.itemNome}</td>
                             <td style={styles.td}>{registro.qtdPorKit}</td>
+                            <td style={styles.td}>{registro.qtdNecessaria}</td>
                             <td style={styles.td}>{registro.estoqueAtual}</td>
-                            <td style={{ ...styles.td, color: "#b45309", fontWeight: 700 }}>{registro.faltanteParaUmKit}</td>
+                            <td style={{ ...styles.td, color: "#b45309", fontWeight: 700 }}>{registro.faltanteComprar}</td>
                           </tr>
                         ))
                       )}
@@ -4992,6 +5517,16 @@ export default function App() {
                 >
                   [TRI] Triangulação entre centros de custo
                 </button>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.movTabButton,
+                    ...(movimentacoesAbaAtiva === "transferencia_tecnico" ? styles.movTabButtonActive : {}),
+                  }}
+                  onClick={() => setMovimentacoesAbaAtiva("transferencia_tecnico")}
+                >
+                  [TRI] Transferência entre técnicos
+                </button>
               </div>
             </div>
             {movimentacoesAbaAtiva === "lancar" && (
@@ -5365,7 +5900,396 @@ export default function App() {
                                 <td style={styles.td}>{tri.cc_destino}</td>
                                 <td style={styles.td}>{item?.nome || `Item #${tri.item_id}`}</td>
                                 <td style={styles.td}>{tri.quantidade}</td>
-                                <td style={styles.td}>{tri.observacao || "-"}</td>
+                                <td style={styles.td}>
+                                  {formatTransferenciaTecnicoResumo(
+                                    parseTransferenciaTecnicoObservacao(tri.observacao),
+                                    tecnicosById
+                                  ) || tri.observacao || "-"}
+                                </td>
+                                <td style={styles.td}>{tri.solicitado_nome}</td>
+                                <td style={styles.td}>{tri.status}</td>
+                                <td style={styles.td}>{tri.aprovado_nome || "-"}</td>
+                                <td style={styles.td}>
+                                  {podeAprovar ? (
+                                    <div style={styles.actionRow}>
+                                      <button style={styles.approveButton} onClick={() => aprovarTriangulacao(tri)}>Aprovar</button>
+                                      <button style={styles.deleteButton} onClick={() => reprovarTriangulacao(tri)}>Reprovar</button>
+                                    </div>
+                                  ) : (
+                                    "-"
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+            )}
+            {movimentacoesAbaAtiva === "transferencia_tecnico" && (
+            <div style={styles.section}>
+              <h3 style={styles.sectionTitle}>Transferência entre técnicos</h3>
+              {!canUseTriangulacao(usuarioAtual) ? (
+                <p style={styles.mutedText}>Seu usuário não possui permissão para usar transferência entre técnicos.</p>
+              ) : (
+                <>
+                  <p style={styles.mutedText}>
+                    Use para repassar itens de um técnico para outro — ideal quando um técnico é desligado e a carga
+                    precisa ir para outro profissional. A transferência passa pelo almoxarifado e exige aprovação.
+                  </p>
+                  <div style={styles.actionRow}>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.secondaryButtonInline,
+                        ...(triTecnicoModo === "item" ? styles.movTabButtonActive : {}),
+                      }}
+                      onClick={() => setTriTecnicoModo("item")}
+                    >
+                      Item único
+                    </button>
+                    <button
+                      type="button"
+                      style={{
+                        ...styles.secondaryButtonInline,
+                        ...(triTecnicoModo === "carga_completa" ? styles.movTabButtonActive : {}),
+                      }}
+                      onClick={() => setTriTecnicoModo("carga_completa")}
+                    >
+                      Carga completa
+                    </button>
+                  </div>
+                  <div style={styles.formGrid}>
+                    <div>
+                      <div style={styles.topbarSub}>Técnico de origem (quem devolve)</div>
+                      <input
+                        style={styles.input}
+                        list="transferencia-tecnico-origem-list"
+                        placeholder="Digite para pesquisar"
+                        value={triTecnicoBuscaOrigem}
+                        onFocus={() => {
+                          if (triTecnicoForm.tecnico_origem_id && triTecnicoBuscaOrigem === labelTecnicoOrigemTransferencia) {
+                            setTriTecnicoBuscaOrigem("");
+                            setTriTecnicoForm((prev) => ({ ...prev, tecnico_origem_id: "", item_id: "", cc: "", quantidade: "" }));
+                          }
+                        }}
+                        onChange={(e) => {
+                          const valor = e.target.value;
+                          setTriTecnicoBuscaOrigem(valor);
+                          const opcao = opcoesTecnicoTransferencia.find((opt) => opt.label === valor);
+                          setTriTecnicoForm((prev) => ({
+                            ...prev,
+                            tecnico_origem_id: opcao ? opcao.id : "",
+                            item_id: "",
+                            cc: "",
+                            quantidade: "",
+                          }));
+                          if (!opcao) setTriTecnicoBuscaItem("");
+                        }}
+                      />
+                      <datalist id="transferencia-tecnico-origem-list">
+                        {opcoesTecnicoTransferenciaFiltradasOrigem.map((opt) => (
+                          <option key={opt.id} value={opt.label} />
+                        ))}
+                      </datalist>
+                    </div>
+                    <div>
+                      <div style={styles.topbarSub}>Técnico de destino (quem recebe)</div>
+                      <input
+                        style={styles.input}
+                        list="transferencia-tecnico-destino-list"
+                        placeholder="Digite para pesquisar"
+                        value={triTecnicoBuscaDestino}
+                        onFocus={() => {
+                          if (triTecnicoForm.tecnico_destino_id && triTecnicoBuscaDestino === labelTecnicoDestinoTransferencia) {
+                            setTriTecnicoBuscaDestino("");
+                            setTriTecnicoForm((prev) => ({ ...prev, tecnico_destino_id: "" }));
+                          }
+                        }}
+                        onChange={(e) => {
+                          const valor = e.target.value;
+                          setTriTecnicoBuscaDestino(valor);
+                          const opcao = opcoesTecnicoTransferencia.find((opt) => opt.label === valor);
+                          setTriTecnicoForm((prev) => ({ ...prev, tecnico_destino_id: opcao ? opcao.id : "" }));
+                        }}
+                      />
+                      <datalist id="transferencia-tecnico-destino-list">
+                        {opcoesTecnicoTransferenciaFiltradasDestino.map((opt) => (
+                          <option key={opt.id} value={opt.label} />
+                        ))}
+                      </datalist>
+                    </div>
+                    {triTecnicoModo === "item" ? (
+                      <>
+                        <div>
+                          <div style={styles.topbarSub}>Item</div>
+                          <input
+                            style={styles.input}
+                            list="transferencia-tecnico-itens-list"
+                            placeholder="Selecione o item"
+                            value={triTecnicoBuscaItem}
+                            onChange={(e) => {
+                              const valor = e.target.value;
+                              setTriTecnicoBuscaItem(valor);
+                              const opcao = opcoesItemTransferenciaTecnico.find((opt) => opt.label === valor);
+                              const ccsDisponiveis = opcao
+                                ? itensPosseOrigemTransferencia.filter((r) => Number(r.item_id) === Number(opcao.id))
+                                : [];
+                              setTriTecnicoForm((prev) => ({
+                                ...prev,
+                                item_id: opcao ? opcao.id : "",
+                                cc: ccsDisponiveis.length === 1 ? ccsDisponiveis[0].cc : "",
+                                quantidade: "",
+                              }));
+                            }}
+                          />
+                          <datalist id="transferencia-tecnico-itens-list">
+                            {opcoesItemTransferenciaTecnicoFiltradas.map((opt) => (
+                              <option key={opt.id} value={opt.label} />
+                            ))}
+                          </datalist>
+                        </div>
+                        <select
+                          style={styles.input}
+                          value={triTecnicoForm.cc}
+                          onChange={(e) => setTriTecnicoForm((prev) => ({ ...prev, cc: e.target.value, quantidade: "" }))}
+                        >
+                          <option value="">CC de origem do item</option>
+                          {ccsItemPosseOrigemTransferencia.map((registro) => (
+                            <option key={registro.cc} value={registro.cc}>
+                              {registro.cc} (saldo: {registro.quantidade})
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          style={styles.input}
+                          type="number"
+                          min={1}
+                          placeholder="Quantidade"
+                          value={triTecnicoForm.quantidade}
+                          onChange={(e) => setTriTecnicoForm((prev) => ({ ...prev, quantidade: e.target.value }))}
+                        />
+                      </>
+                    ) : null}
+                    <input
+                      style={{ ...styles.input, gridColumn: triTecnicoModo === "item" ? "1 / -1" : undefined }}
+                      placeholder="Observação (ex.: técnico desligado)"
+                      value={triTecnicoForm.observacao}
+                      onChange={(e) => setTriTecnicoForm((prev) => ({ ...prev, observacao: e.target.value }))}
+                    />
+                  </div>
+
+                  {triTecnicoForm.tecnico_origem_id && (
+                    <p style={styles.mutedText}>
+                      Itens em posse do técnico de origem: {itensPosseOrigemTransferencia.length} linha(s)
+                    </p>
+                  )}
+
+                  {triTecnicoModo === "carga_completa" && previewCargaCompletaTransferencia.length > 0 && (
+                    <div style={styles.tableWrap}>
+                      <table style={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={styles.th}>Item</th>
+                            <th style={styles.th}>CC origem</th>
+                            <th style={styles.th}>CC destino</th>
+                            <th style={styles.th}>Qtd</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {previewCargaCompletaTransferencia.map((registro, index) => (
+                            <tr key={`${registro.item_id}-${registro.cc}-${index}`}>
+                              <td style={styles.td}>{registro.itemNome}</td>
+                              <td style={styles.td}>{registro.cc}</td>
+                              <td style={styles.td}>{registro.cc_destino}</td>
+                              <td style={styles.td}>{registro.quantidade}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  <div style={styles.actionRow}>
+                    {triTecnicoModo === "item" ? (
+                      <button
+                        style={{
+                          ...styles.primaryButtonInline,
+                          ...(!canRequestTriangulacao(usuarioAtual) ? styles.disabledButton : {}),
+                        }}
+                        onClick={adicionarTransferenciaTecnicoAoLote}
+                        disabled={!canRequestTriangulacao(usuarioAtual)}
+                      >
+                        Adicionar ao lote
+                      </button>
+                    ) : null}
+                    <button
+                      style={{
+                        ...styles.secondaryButtonInline,
+                        ...(!canRequestTriangulacao(usuarioAtual) ? styles.disabledButton : {}),
+                      }}
+                      onClick={solicitarTransferenciaTecnico}
+                      disabled={!canRequestTriangulacao(usuarioAtual)}
+                    >
+                      {triTecnicoModo === "carga_completa" ? "Solicitar carga completa" : "Solicitar lote"}
+                    </button>
+                    {triTecnicoModo === "item" ? (
+                      <button
+                        style={styles.deleteButton}
+                        onClick={limparLoteTransferenciaTecnico}
+                        disabled={loteTriTecnico.length === 0}
+                      >
+                        Limpar lote
+                      </button>
+                    ) : null}
+                  </div>
+                  {!canRequestTriangulacao(usuarioAtual) && (
+                    <p style={styles.permissionHint}>Você pode visualizar solicitações, mas não pode solicitar.</p>
+                  )}
+
+                  {triTecnicoModo === "item" && (
+                    <div style={styles.tableWrap}>
+                      <table style={styles.table}>
+                        <thead>
+                          <tr>
+                            <th style={styles.th}>Origem</th>
+                            <th style={styles.th}>Destino</th>
+                            <th style={styles.th}>CC</th>
+                            <th style={styles.th}>Item</th>
+                            <th style={styles.th}>Qtd</th>
+                            <th style={styles.th}>Observação</th>
+                            <th style={styles.th}>Ação</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {loteTriTecnico.length === 0 ? (
+                            <tr><td style={styles.td} colSpan={7}>Nenhuma linha adicionada ao lote.</td></tr>
+                          ) : (
+                            loteTriTecnico.map((linha) => {
+                              const origem = tecnicosById[Number(linha.tecnico_origem_id)];
+                              const destino = tecnicosById[Number(linha.tecnico_destino_id)];
+                              const item = itensById[Number(linha.item_id)];
+                              return (
+                                <tr key={linha.localId}>
+                                  <td style={styles.td}>{origem?.nome || "-"}</td>
+                                  <td style={styles.td}>{destino?.nome || "-"}</td>
+                                  <td style={styles.td}>{linha.cc}</td>
+                                  <td style={styles.td}>{item?.nome || "-"}</td>
+                                  <td style={styles.td}>{linha.quantidade}</td>
+                                  <td style={styles.td}>{linha.observacao || "-"}</td>
+                                  <td style={styles.td}>
+                                    <button style={styles.deleteButton} onClick={() => removerTransferenciaTecnicoDoLote(linha.localId)}>
+                                      Remover
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  <div style={styles.sectionMini}>
+                    <div style={styles.formGrid}>
+                      <input
+                        style={styles.input}
+                        type="date"
+                        value={triFiltroDataInicio}
+                        onChange={(e) => setTriFiltroDataInicio(e.target.value)}
+                      />
+                      <input
+                        style={styles.input}
+                        type="date"
+                        value={triFiltroDataFim}
+                        onChange={(e) => setTriFiltroDataFim(e.target.value)}
+                      />
+                    </div>
+                    <div style={styles.actionRow}>
+                      <select
+                        style={styles.inputCompact}
+                        value={String(triLimiteLinhas)}
+                        onChange={(e) => setTriLimiteLinhas(e.target.value === "tudo" ? "tudo" : Number(e.target.value))}
+                      >
+                        {OPCOES_LIMITE_LISTA.map((opt) => (
+                          <option key={String(opt)} value={String(opt)}>
+                            {opt === "tudo" ? "Tudo" : `${opt} linhas`}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        style={styles.secondaryButtonInline}
+                        onClick={() => setTriPaginaAtual((p) => Math.max(1, p - 1))}
+                        disabled={triLimiteLinhas === "tudo" || triPaginaAtual <= 1}
+                      >
+                        Anterior
+                      </button>
+                      <button
+                        type="button"
+                        style={styles.secondaryButtonInline}
+                        onClick={() => setTriPaginaAtual((p) => Math.min(triTotalPaginasTransferenciaTecnico, p + 1))}
+                        disabled={triLimiteLinhas === "tudo" || triPaginaAtual >= triTotalPaginasTransferenciaTecnico}
+                      >
+                        Próxima
+                      </button>
+                      <span style={styles.mutedText}>
+                        {triLimiteLinhas === "tudo"
+                          ? `Mostrando todas (${triangulacoesTransferenciaTecnicoFiltradas.length})`
+                          : `Página ${triPaginaAtual} de ${triTotalPaginasTransferenciaTecnico} (${triangulacoesTransferenciaTecnicoFiltradas.length} registros)`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={styles.tableWrap}>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>Data</th>
+                          <th style={styles.th}>Origem</th>
+                          <th style={styles.th}>Destino</th>
+                          <th style={styles.th}>Item</th>
+                          <th style={styles.th}>Qtd</th>
+                          <th style={styles.th}>Detalhe</th>
+                          <th style={styles.th}>Solicitado por</th>
+                          <th style={styles.th}>Status</th>
+                          <th style={styles.th}>Aprovado/Reprovado por</th>
+                          <th style={styles.th}>Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {triangulacoesTransferenciaTecnicoVisiveis.length === 0 ? (
+                          <tr><td style={styles.td} colSpan={10}>Nenhuma transferência entre técnicos solicitada.</td></tr>
+                        ) : (
+                          triangulacoesTransferenciaTecnicoVisiveis.map((tri) => {
+                            const item = itensById[Number(tri.item_id)];
+                            const meta = parseTransferenciaTecnicoObservacao(tri.observacao);
+                            const origemNome =
+                              meta?.tecnico_origem_nome ||
+                              tecnicosById[Number(meta?.tecnico_origem_id)]?.nome ||
+                              "-";
+                            const destinoNome =
+                              meta?.tecnico_destino_nome ||
+                              tecnicosById[Number(meta?.tecnico_destino_id)]?.nome ||
+                              "-";
+                            const podeAprovar =
+                              tri.status === "Pendente" &&
+                              roleCanApproveTriangulacao(usuarioAtual, tri.cc_origem, tri.cc_destino);
+                            return (
+                              <tr key={tri.id}>
+                                <td style={styles.td}>{new Date(tri.created_at).toLocaleString("pt-BR")}</td>
+                                <td style={styles.td}>{origemNome}</td>
+                                <td style={styles.td}>{destinoNome}</td>
+                                <td style={styles.td}>{item?.nome || `Item #${tri.item_id}`}</td>
+                                <td style={styles.td}>{tri.quantidade}</td>
+                                <td style={styles.td}>
+                                  {formatTransferenciaTecnicoResumo(meta, tecnicosById) || tri.observacao || "-"}
+                                </td>
                                 <td style={styles.td}>{tri.solicitado_nome}</td>
                                 <td style={styles.td}>{tri.status}</td>
                                 <td style={styles.td}>{tri.aprovado_nome || "-"}</td>

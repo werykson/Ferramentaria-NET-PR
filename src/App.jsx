@@ -1,8 +1,11 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ExcelJS from "exceljs";
 import * as XLSX from "xlsx";
 import { supabase } from "./supabaseClient";
 import { theme } from "./theme.js";
 import { captureException } from "./telemetry.js";
+
+const RELATORIO_ESTOQUE_TECNICO_TEMPLATE_URL = "/templates/relatorio_estoque_tecnico.xlsx";
 
 const CCS = [
   "CC NET APOIO PR",
@@ -40,7 +43,7 @@ const MAX_INATIVIDADE_MS = 60 * 60 * 1000;
 const LIMITE_PADRAO_LISTA = 15;
 const OPCOES_LIMITE_LISTA = [15, 25, 50, 100, "tudo"];
 const SUPABASE_PAGE_SIZE = 1000;
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 const TRANSFERENCIA_TECNICO_TAG = "[TRANSFERENCIA_TECNICO]";
 
 const TIPOS_MOV = [
@@ -552,6 +555,208 @@ function downloadWorkbook(filename, sheetName, rows) {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
   XLSX.writeFile(wb, filename);
+}
+
+function excelCellText(value) {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "object") {
+    if (Array.isArray(value.richText)) {
+      return value.richText.map((part) => part?.text ?? "").join("");
+    }
+    if (value.text != null) return String(value.text);
+    if (value.result != null) return String(value.result);
+  }
+  return String(value);
+}
+
+function cloneExceljsStyle(style) {
+  if (!style) return undefined;
+  try {
+    return JSON.parse(JSON.stringify(style));
+  } catch {
+    return undefined;
+  }
+}
+
+function findTemplateHeaderMap(worksheet, headerRowNumber = 4) {
+  const headerRow = worksheet.getRow(headerRowNumber);
+  const map = { material: null, marca: null, patrimonio: null, qtd: null, ass: null };
+  headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    const header = normalizeSearchText(excelCellText(cell.value));
+    if (header === "material") map.material = colNumber;
+    else if (header.includes("marca")) map.marca = colNumber;
+    else if (header.includes("patrimonio") || header.includes("cod")) map.patrimonio = colNumber;
+    else if (header === "qtd" || header.startsWith("qtd")) map.qtd = colNumber;
+    else if (header.startsWith("ass")) map.ass = colNumber;
+  });
+  return map;
+}
+
+async function downloadExceljsWorkbook(filename, workbook) {
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function preencherRelatorioEstoqueTecnicoTemplate({
+  templateUrl,
+  tecnicoNome,
+  itensTecnico,
+}) {
+  const response = await fetch(templateUrl);
+  if (!response.ok) {
+    throw new Error(`Não foi possível carregar o template de relatório (${response.status}).`);
+  }
+
+  const templateBuffer = await response.arrayBuffer();
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(templateBuffer);
+
+  const qtdPorNome = new Map();
+  const metaPorNome = new Map();
+  itensTecnico.forEach((item) => {
+    const chave = normalizeSearchText(item.ITEM);
+    if (!chave) return;
+    qtdPorNome.set(chave, Number(qtdPorNome.get(chave) || 0) + Number(item.QTD_COM_TECNICO || 0));
+    if (!metaPorNome.has(chave)) {
+      metaPorNome.set(chave, {
+        itemId: item.ITEM_ID,
+        itemNome: item.ITEM,
+      });
+    }
+  });
+
+  const materiaisDoTemplate = new Set();
+  const sheetMeta = [];
+
+  workbook.worksheets.forEach((worksheet) => {
+    const cols = findTemplateHeaderMap(worksheet, 4);
+    const materiaisOrdenados = [];
+    let lastDataRow = 4;
+    if (cols.material) {
+      for (let rowNumber = 5; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+        const materialNome = excelCellText(worksheet.getRow(rowNumber).getCell(cols.material).value).trim();
+        if (!materialNome) continue;
+        lastDataRow = rowNumber;
+        const chave = normalizeSearchText(materialNome);
+        materiaisDoTemplate.add(chave);
+        materiaisOrdenados.push({ chave, materialNome });
+      }
+    }
+    sheetMeta.push({ worksheet, cols, lastDataRow, materiaisOrdenados });
+  });
+
+  sheetMeta.forEach(({ worksheet, cols, lastDataRow, materiaisOrdenados }, sheetIndex) => {
+    const nomeAtual = excelCellText(worksheet.getCell("A1").value);
+    const prefixoNome = nomeAtual.match(/^NOME DO COLABORADOR\s*:/i)?.[0] || "NOME DO COLABORADOR:";
+    worksheet.getCell("A1").value = `${prefixoNome}${tecnicoNome || ""}`;
+
+    const cpfAtual = excelCellText(worksheet.getCell("A2").value);
+    const prefixoCpf = cpfAtual.match(/^CPF\s*:/i)?.[0] || "CPF:";
+    worksheet.getCell("A2").value = prefixoCpf;
+
+    if (!cols.material || !cols.qtd) return;
+
+    const styleSourceRow = worksheet.getRow(5);
+    const styleSnapshot = {};
+    [cols.material, cols.marca, cols.patrimonio, cols.qtd, cols.ass]
+      .filter(Boolean)
+      .forEach((colNumber) => {
+        const sourceCell = styleSourceRow.getCell(colNumber);
+        styleSnapshot[colNumber] = {
+          font: cloneExceljsStyle(sourceCell.font),
+          border: cloneExceljsStyle(sourceCell.border),
+          fill: cloneExceljsStyle(sourceCell.fill),
+          alignment: cloneExceljsStyle(sourceCell.alignment),
+          numFmt: sourceCell.numFmt,
+        };
+      });
+
+    const linhasVisiveis = materiaisOrdenados
+      .map(({ chave, materialNome }) => {
+        const qtd = Number(qtdPorNome.get(chave) || 0);
+        if (qtd <= 0) return null;
+        return {
+          material: materialNome,
+          patrimonio: null,
+          qtd,
+          ass: qtd > 0 ? "OK" : null,
+        };
+      })
+      .filter(Boolean);
+
+    // Itens do técnico fora do checklist do modelo entram só na 1ª aba.
+    if (sheetIndex === 0) {
+      const extras = [...metaPorNome.entries()]
+        .filter(([chave]) => !materiaisDoTemplate.has(chave))
+        .map(([chave, meta]) => {
+          const qtd = Number(qtdPorNome.get(chave) || 0);
+          if (qtd <= 0) return null;
+          return {
+            material: meta.itemNome,
+            patrimonio: null,
+            qtd,
+            ass: qtd > 0 ? "OK" : null,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => String(a.material).localeCompare(String(b.material), "pt-BR"));
+
+      linhasVisiveis.push(...extras);
+    }
+
+    // Limpa o bloco antigo do modelo e reescreve só itens com quantidade > 0.
+    for (let rowNumber = 5; rowNumber <= lastDataRow; rowNumber += 1) {
+      const row = worksheet.getRow(rowNumber);
+      [cols.material, cols.marca, cols.patrimonio, cols.qtd, cols.ass]
+        .filter(Boolean)
+        .forEach((colNumber) => {
+          const cell = row.getCell(colNumber);
+          cell.value = null;
+          cell.border = undefined;
+          cell.fill = undefined;
+          cell.font = undefined;
+          cell.alignment = undefined;
+        });
+    }
+
+    linhasVisiveis.forEach((linha, index) => {
+      const row = worksheet.getRow(5 + index);
+      const writeCell = (colNumber, value) => {
+        if (!colNumber) return;
+        const cell = row.getCell(colNumber);
+        const snap = styleSnapshot[colNumber];
+        if (snap) {
+          if (snap.font) cell.font = cloneExceljsStyle(snap.font);
+          if (snap.border) cell.border = cloneExceljsStyle(snap.border);
+          if (snap.fill) cell.fill = cloneExceljsStyle(snap.fill);
+          if (snap.alignment) cell.alignment = cloneExceljsStyle(snap.alignment);
+          if (snap.numFmt) cell.numFmt = snap.numFmt;
+        }
+        cell.value = value;
+      };
+
+      writeCell(cols.material, linha.material ?? null);
+      writeCell(cols.marca, linha.marca ?? null);
+      writeCell(cols.patrimonio, linha.patrimonio ?? null);
+      writeCell(cols.qtd, linha.qtd ?? null);
+      writeCell(cols.ass, linha.ass ?? null);
+    });
+  });
+
+  return workbook;
 }
 
 function readExcelValue(row, aliases) {
@@ -3933,7 +4138,7 @@ export default function App() {
 
   const itensCriticosVisiveis = indicadoresDashboard.itensCriticos;
 
-  const exportarRelatorioEstoqueExcel = () => {
+  const exportarRelatorioEstoqueExcel = async () => {
     const termoBusca = normalizeSearchText(estoqueFiltro.busca_nome);
     const tecnicoSelecionadoId = Number(estoqueFiltro.tecnico_id || 0);
     const tecnicoSelecionado = tecnicoSelecionadoId ? tecnicosById[tecnicoSelecionadoId] : null;
@@ -3956,14 +4161,22 @@ export default function App() {
         }))
         .sort((a, b) => a.ITEM.localeCompare(b.ITEM, "pt-BR"));
 
-      downloadWorkbook(
-        `ESTOQUE_TECNICO_${(tecnicoSelecionado?.nome || tecnicoSelecionadoId)
-          .toString()
-          .replace(/\s+/g, "_")
-          .toUpperCase()}.xlsx`,
-        "Relatorio",
-        rowsTecnico.length ? rowsTecnico : [{ INFO: "Nenhum registro encontrado para os filtros selecionados." }]
-      );
+      const nomeArquivo = `ESTOQUE_TECNICO_${(tecnicoSelecionado?.nome || tecnicoSelecionadoId)
+        .toString()
+        .replace(/\s+/g, "_")
+        .toUpperCase()}.xlsx`;
+
+      try {
+        const workbook = await preencherRelatorioEstoqueTecnicoTemplate({
+          templateUrl: RELATORIO_ESTOQUE_TECNICO_TEMPLATE_URL,
+          tecnicoNome: tecnicoSelecionado?.nome || `Técnico #${tecnicoSelecionadoId}`,
+          itensTecnico: rowsTecnico,
+        });
+        await downloadExceljsWorkbook(nomeArquivo, workbook);
+      } catch (error) {
+        captureException(error, { where: "exportarRelatorioEstoqueExcel.tecnico" });
+        alert(error?.message || "Falha ao exportar o relatório do técnico com o novo modelo.");
+      }
       return;
     }
 
